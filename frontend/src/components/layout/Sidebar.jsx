@@ -41,30 +41,6 @@ const auditorMenus = [
     ),
   },
   {
-    label: 'Fieldwork',
-    to: '/fieldwork',
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <polyline points="14 2 14 8 20 8" />
-        <line x1="16" y1="13" x2="8" y2="13" />
-        <line x1="16" y1="17" x2="8" y2="17" />
-        <polyline points="10 9 9 9 8 9" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Analytics',
-    to: '/analytics',
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="18" y1="20" x2="18" y2="10" />
-        <line x1="12" y1="20" x2="12" y2="4" />
-        <line x1="6" y1="20" x2="6" y2="14" />
-      </svg>
-    ),
-  },
-  {
     label: 'Team Chat',
     to: '/team-chat',
     icon: (
@@ -148,6 +124,13 @@ function Sidebar({ collapsed = false }) {
   const navigate = useNavigate()
   const { user, logout, ROLES } = useUser()
   const [, forceUpdate] = useState(0)
+  const [currentTime, setCurrentTime] = useState(() => new Date())
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('spiHubTheme')
+    return savedTheme ? savedTheme === 'dark' : document.documentElement.getAttribute('data-theme') === 'dark'
+  })
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [showAccountActions, setShowAccountActions] = useState(false)
 
   const isAdmin = user?.role === ROLES.ADMIN
   const isKspi = user?.role === ROLES.KSPI
@@ -167,21 +150,31 @@ function Sidebar({ collapsed = false }) {
     }
   }, [])
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setCurrentTime(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', isDarkMode ? 'dark' : 'light')
+    localStorage.setItem('spiHubTheme', isDarkMode ? 'dark' : 'light')
+  }, [isDarkMode])
+
   // Get menu visibility from localStorage
   const getVisibleMenus = () => {
+    if (isKspi) {
+      return auditorMenus
+    }
+
     const menuMapping = {
       'Dashboard': 'Dashboard',
       'List Pekerjaan': 'List Pekerjaan',
       'Rencana Kegiatan': 'Rencana Kerja',
-      'Fieldwork': 'Fieldwork',
-      'Analytics': 'Analytics',
       'Team Chat': 'Team Chat',
     }
 
-    const savedAuditorMenus = JSON.parse(localStorage.getItem('portalAoptiAuditorMenus') || '{"Dashboard":true,"Rencana Kerja":true,"Fieldwork":true,"Temuan Audit":true,"Analytics":true,"Team Chat":true}')
-    const savedKspiMenus = JSON.parse(localStorage.getItem('portalAoptiKspiMenus') || '{"Dashboard":true,"Rencana Kerja":false,"Fieldwork":false,"Temuan Audit":false,"Analytics":true,"Team Chat":true}')
-
-    const visibilitySettings = isKspi ? savedKspiMenus : savedAuditorMenus
+    const savedAuditorMenus = JSON.parse(localStorage.getItem('portalAoptiAuditorMenus') || '{"Dashboard":true,"List Pekerjaan":true,"Rencana Kerja":true,"Team Chat":true}')
+    const visibilitySettings = savedAuditorMenus
 
     return auditorMenus.filter(menu => {
       const settingsKey = menuMapping[menu.label]
@@ -193,18 +186,20 @@ function Sidebar({ collapsed = false }) {
   const currentMenus = isAdmin ? adminMenus : visibleMenus
   const sectionTitle = isKspi ? 'Menu KSPI (View Only)' : isAuditor ? 'Menu Auditor' : 'Menu Admin'
 
-  const roleShort = {
-    [ROLES.ADMIN]: 'AD',
-    [ROLES.AUDITOR]: 'AU',
-    [ROLES.KSPI]: 'KS',
-  }
-
   // Separate dashboard from other menus
   const dashboardMenu = currentMenus[0]
   const mainMenus = currentMenus.slice(1)
 
   function handleSupport() {
     navigate('/team-chat')
+  }
+
+  function toggleTheme() {
+    setIsDarkMode((prev) => !prev)
+  }
+
+  function toggleNotifications() {
+    setShowNotifications((prev) => !prev)
   }
 
   function handleSignOut() {
@@ -254,18 +249,6 @@ function Sidebar({ collapsed = false }) {
         </div>
       </div>
 
-      {user && (
-        <div className="user-role-badge">
-          <span className={`role-indicator role-${user.role}`}>
-            {roleShort[user.role]}
-          </span>
-          <div className="role-meta">
-            <span className="role-label">Role</span>
-            <span className="role-text">{ROLE_LABELS[user.role]}</span>
-          </div>
-        </div>
-      )}
-
       <div className="sidebar-divider" aria-hidden="true"></div>
 
       <nav className="menu-list" aria-label="Main menu">
@@ -309,24 +292,62 @@ function Sidebar({ collapsed = false }) {
       </nav>
 
       <div className="sidebar-footer">
-        {!isAdmin && (
-          <button type="button" className="sidebar-btn support-btn" onClick={handleSupport}>
+        <div className="sidebar-clock-card">
+          <div className="sidebar-clock-topline">
+            <span className="sidebar-clock-time">{currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <div className="sidebar-clock-buttons">
+              <button type="button" className="sidebar-mini-btn" onClick={toggleTheme} title="Toggle theme" aria-label="Toggle theme">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="4" />
+                  <path d="M12 2v2" />
+                  <path d="M12 20v2" />
+                  <path d="M4.93 4.93l1.41 1.41" />
+                  <path d="M17.66 17.66l1.41 1.41" />
+                  <path d="M2 12h2" />
+                  <path d="M20 12h2" />
+                </svg>
+              </button>
+              <button type="button" className="sidebar-mini-btn" onClick={toggleNotifications} title="Notifications" aria-label="Notifications">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" />
+                  <path d="M10 17a2 2 0 0 0 4 0" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <span className="sidebar-clock-date">{currentTime.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' })}</span>
+          {showNotifications && (
+            <div className="sidebar-notification-popover">Tidak ada notifikasi baru.</div>
+          )}
+        </div>
+
+        {user && (
+          <div className="sidebar-user-row">
+            <button type="button" className="sidebar-user-identity" onClick={() => setShowAccountActions((prev) => !prev)}>
+              <span className={`role-indicator role-${user.role} sidebar-user-avatar`}>{(user.name || 'P')[0]?.toUpperCase()}</span>
+              <div className="sidebar-user-meta">
+                <span className="sidebar-user-name">{user.name || 'Pengguna'}</span>
+                <span className="sidebar-user-role">{ROLE_LABELS[user.role]}</span>
+              </div>
+            </button>
+            <button type="button" className="sidebar-user-menu-btn" onClick={() => setShowAccountActions((prev) => !prev)} aria-label="Account actions">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+          </div>
+        )}
+
+        {showAccountActions && (
+          <button type="button" className="sidebar-signout-btn" onClick={handleSignOut}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
             </svg>
-            <span>Support</span>
+            <span>Sign Out</span>
           </button>
         )}
-        <button type="button" className="sidebar-btn signout-btn" onClick={handleSignOut}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-            <polyline points="16 17 21 12 16 7" />
-            <line x1="21" y1="12" x2="9" y2="12" />
-          </svg>
-          <span>Sign Out</span>
-        </button>
       </div>
     </aside>
   )

@@ -5,8 +5,6 @@ import LoginPage from '../../pages/LoginPage'
 import DashboardPage from '../../pages/DashboardPage'
 import WorkListPage from '../../pages/WorkListPage'
 import AuditPlanPage from '../../pages/AuditPlanPage'
-import FieldworkPage from '../../pages/FieldworkPage'
-import AnalyticsPage from '../../pages/AnalyticsPage'
 import ChatPage from '../../pages/ChatPage'
 import AdminPage from '../../pages/AdminPage'
 import NotFoundPage from '../../pages/NotFoundPage'
@@ -102,8 +100,6 @@ function AppRouter() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/work-list" element={<WorkListPage />} />
           <Route path="/audit-plan" element={<AuditPlanPage />} />
-          <Route path="/fieldwork" element={<FieldworkPage />} />
-          <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/team-chat" element={<ChatPage />} />
           <Route
             path="/admin/*"

@@ -1,5 +1,16 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useUser, ROLES } from '../context/UserContext'
+import {
+  createProgram,
+  createWorkItem,
+  deleteProgram,
+  deleteWorkItem,
+  getPrograms,
+  getWorkList,
+  updateProgram,
+  updateWorkItem,
+  updateWorkItemProgress,
+} from '../services/spiHubApi'
 
 const PROGRESS_OPTIONS = [
   { value: 0, label: '0% - Start', color: '#94a3b8', bg: '#f1f5f9' },
@@ -24,18 +35,44 @@ function statusFromProgress(progress) {
 }
 
 function normalizeTask(task, fallbackYear = currentYear) {
-  const startDate = task.startDate || task.date || ''
-  const endDate = task.endDate || task.date || startDate
+  const startDate = task.startDate || task.start_date || task.date || ''
+  const endDate = task.endDate || task.end_date || task.date || startDate
+  const programId = task.programId || task.program_id || ''
+  const programName = task.programName || task.program_name || ''
+  const taskName = task.taskName || task.task_name || ''
+  const taskId = task.taskId || task.task_id || ''
   const progress = normalizeProgress(task.progress)
 
   return {
     ...task,
     year: Number(task.year) || fallbackYear,
+    programId,
+    programName,
+    taskId,
+    taskName,
     startDate,
     endDate,
     date: startDate,
+    location: task.location || '',
+    pic: task.pic || '',
     progress,
     status: statusFromProgress(progress),
+  }
+}
+
+function buildTaskPayload(task) {
+  return {
+    id: task.id,
+    task_id: task.taskId,
+    program_id: task.programId,
+    program_name: task.programName,
+    task_name: task.taskName,
+    start_date: task.startDate,
+    end_date: task.endDate,
+    location: task.location || '',
+    pic: task.pic || '',
+    progress: task.progress,
+    year: task.year,
   }
 }
 
@@ -131,66 +168,8 @@ function migrateYearScopedData(rawPrograms, rawTasks) {
   return { programs: migratedPrograms, tasks: patchedTasks }
 }
 
-const initialPrograms = [
-  { id: 'prog1-2026', year: 2026, name: 'Pemenuhan Program Pengawasan' },
-  { id: 'prog2-2026', year: 2026, name: 'HRADC' },
-  { id: 'prog3-2026', year: 2026, name: 'Lainnya' },
-]
-
-const initialWorkList = [
-  {
-    id: 'wl001',
-    year: 2026,
-    programId: 'prog1-2026',
-    programName: 'Pemenuhan Program Pengawasan',
-    taskId: 'task001',
-    taskName: 'Audit MBG',
-    startDate: '2026-04-12',
-    endDate: '2026-04-19',
-    date: '2026-04-12',
-    progress: 100,
-    status: 'completed',
-  },
-  {
-    id: 'wl002',
-    year: 2026,
-    programId: 'prog1-2026',
-    programName: 'Pemenuhan Program Pengawasan',
-    taskId: 'task002',
-    taskName: 'Review Pengadaan Barang Strategis',
-    startDate: '2026-04-20',
-    endDate: '2026-05-02',
-    date: '2026-04-20',
-    progress: 50,
-    status: 'in_progress',
-  },
-  {
-    id: 'wl003',
-    year: 2026,
-    programId: 'prog1-2026',
-    programName: 'Pemenuhan Program Pengawasan',
-    taskId: 'task003',
-    taskName: 'Evaluasi Kepatuhan Kontrak Tahap I',
-    startDate: '2026-05-03',
-    endDate: '2026-05-12',
-    date: '2026-05-03',
-    progress: 50,
-    status: 'in_progress',
-  },
-  {
-    id: 'wl004',
-    year: 2026,
-    programId: 'prog1-2026',
-    programName: 'Pemenuhan Program Pengawasan',
-    taskId: 'task004',
-    taskName: 'Sampling Dokumen Pengeluaran',
-    startDate: '2026-06-01',
-    endDate: '2026-06-14',
-    date: '2026-06-01',
-    progress: 0,
-    status: 'scheduled',
-  },
-]
+const initialPrograms = []
+const initialWorkList = []
 
 function WorkListPage() {
   const { user, hasPermission } = useUser()
@@ -202,7 +181,6 @@ function WorkListPage() {
   const [selectedDecade, setSelectedDecade] = useState(Math.floor(currentYear / 10) * 10)
   const [programs, setPrograms] = useState([])
   const [workList, setWorkList] = useState([])
-  const [isHydrated, setIsHydrated] = useState(false)
   const [showProgramForm, setShowProgramForm] = useState(false)
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [editingId, setEditingId] = useState(null)
@@ -251,37 +229,52 @@ function WorkListPage() {
   }
 
   useEffect(() => {
-    const savedPrograms = localStorage.getItem('portalAoptiPrograms')
-    const savedWorkList = localStorage.getItem('portalAoptiWorkList')
+    let cancelled = false
 
-    if (savedPrograms && savedWorkList) {
-      const rawPrograms = JSON.parse(savedPrograms)
-      const rawTasks = JSON.parse(savedWorkList)
-      const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(rawPrograms, rawTasks)
-      setPrograms(migratedPrograms)
-      setWorkList(migratedTasks)
-    } else {
-      setPrograms(initialPrograms)
-      setWorkList(initialWorkList.map(normalizeTask))
-      localStorage.setItem('portalAoptiPrograms', JSON.stringify(initialPrograms))
-      localStorage.setItem('portalAoptiWorkList', JSON.stringify(initialWorkList))
-    }
-    setIsHydrated(true)
-  }, [])
+    async function loadWorkList() {
+      try {
+        const [programResponse, workListResponse] = await Promise.all([
+          getPrograms(selectedYear),
+          getWorkList(selectedYear),
+        ])
+        if (cancelled) return
 
-  useEffect(() => {
-    if (isHydrated && programs.length > 0) {
-      localStorage.setItem('portalAoptiPrograms', JSON.stringify(programs))
-      window.dispatchEvent(new Event('portalPrograms-changed'))
-    }
-  }, [programs, isHydrated])
+        const apiPrograms = programResponse || []
+        const apiWorkList = (workListResponse.worklist || []).map(normalizeTask)
+        const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(apiPrograms, apiWorkList)
 
-  useEffect(() => {
-    if (isHydrated && workList.length > 0) {
-      localStorage.setItem('portalAoptiWorkList', JSON.stringify(workList))
-      window.dispatchEvent(new Event('portalWorkList-changed'))
+        setPrograms(migratedPrograms)
+        setWorkList(migratedTasks)
+        localStorage.setItem('portalAoptiPrograms', JSON.stringify(migratedPrograms))
+        localStorage.setItem('portalAoptiWorkList', JSON.stringify(migratedTasks))
+        window.dispatchEvent(new Event('portalPrograms-changed'))
+        window.dispatchEvent(new Event('portalWorkList-changed'))
+      } catch (error) {
+        if (cancelled) return
+
+        const savedPrograms = localStorage.getItem('portalAoptiPrograms')
+        const savedWorkList = localStorage.getItem('portalAoptiWorkList')
+
+        if (savedPrograms && savedWorkList) {
+          const rawPrograms = JSON.parse(savedPrograms)
+          const rawTasks = JSON.parse(savedWorkList)
+          const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(rawPrograms, rawTasks)
+          setPrograms(migratedPrograms)
+          setWorkList(migratedTasks)
+        } else {
+          setPrograms([])
+          setWorkList([])
+        }
+      } finally {
+      }
     }
-  }, [workList, isHydrated])
+
+    loadWorkList()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedYear])
 
   const filteredWorkList = workList.filter((item) => item.year === selectedYear)
   const yearPrograms = useMemo(
@@ -360,31 +353,30 @@ function WorkListPage() {
       return
     }
 
-    if (editingProgramId) {
-      setPrograms((prev) =>
-        prev.map((p) =>
-          p.id === editingProgramId ? { ...p, name: programFormData.name.trim() } : p
-        )
-      )
-      setWorkList((prev) =>
-        prev.map((item) =>
-          item.programId === editingProgramId
-            ? { ...item, programName: programFormData.name.trim() }
-            : item
-        )
-      )
-    } else {
-      const newProgram = {
-        id: `prog${Date.now()}-${selectedYear}`,
-        name: programFormData.name.trim(),
-        year: selectedYear,
+    const submitProgram = async () => {
+      if (editingProgramId) {
+        await updateProgram(editingProgramId, { name: programFormData.name.trim(), year: selectedYear })
+      } else {
+        await createProgram({ name: programFormData.name.trim(), year: selectedYear })
       }
-      setPrograms((prev) => [...prev, newProgram])
+
+      setProgramFormData({ name: '' })
+      setEditingProgramId(null)
+      setShowProgramForm(false)
+      const [programResponse, workListResponse] = await Promise.all([
+        getPrograms(selectedYear),
+        getWorkList(selectedYear),
+      ])
+      const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(programResponse || [], (workListResponse.worklist || []).map(normalizeTask))
+      setPrograms(migratedPrograms)
+      setWorkList(migratedTasks)
+      localStorage.setItem('portalAoptiPrograms', JSON.stringify(migratedPrograms))
+      localStorage.setItem('portalAoptiWorkList', JSON.stringify(migratedTasks))
+      window.dispatchEvent(new Event('portalPrograms-changed'))
+      window.dispatchEvent(new Event('portalWorkList-changed'))
     }
 
-    setProgramFormData({ name: '' })
-    setEditingProgramId(null)
-    setShowProgramForm(false)
+    submitProgram().catch(() => alert('Gagal menyimpan program kerja'))
   }
 
   function handleEditProgram(program) {
@@ -400,10 +392,21 @@ function WorkListPage() {
       return
     }
     if (confirm('Hapus Program Kerja ini?')) {
-      setPrograms((prev) => prev.filter((p) => p.id !== programId))
-      if (selectedProgramId === programId) {
-        setSelectedProgramId(null)
-      }
+      deleteProgram(programId)
+        .then(() => Promise.all([getPrograms(selectedYear), getWorkList(selectedYear)]))
+        .then(([programResponse, workListResponse]) => {
+          const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(programResponse || [], (workListResponse.worklist || []).map(normalizeTask))
+          setPrograms(migratedPrograms)
+          setWorkList(migratedTasks)
+          localStorage.setItem('portalAoptiPrograms', JSON.stringify(migratedPrograms))
+          localStorage.setItem('portalAoptiWorkList', JSON.stringify(migratedTasks))
+          window.dispatchEvent(new Event('portalPrograms-changed'))
+          window.dispatchEvent(new Event('portalWorkList-changed'))
+          if (selectedProgramId === programId) {
+            setSelectedProgramId(null)
+          }
+        })
+        .catch(() => alert('Gagal menghapus program kerja'))
     }
   }
 
@@ -444,13 +447,28 @@ function WorkListPage() {
       status: statusFromProgress(progress),
     }
 
-    if (editingId) {
-      setWorkList((prev) => prev.map((item) => (item.id === editingId ? newItem : item)))
-    } else {
-      setWorkList((prev) => [...prev, newItem])
+    const submitTask = async () => {
+      if (editingId) {
+        await updateWorkItem(editingId, buildTaskPayload(newItem))
+      } else {
+        await createWorkItem(buildTaskPayload(newItem))
+      }
+
+      resetTaskForm()
+      const [programResponse, workListResponse] = await Promise.all([
+        getPrograms(selectedYear),
+        getWorkList(selectedYear),
+      ])
+      const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(programResponse || [], (workListResponse.worklist || []).map(normalizeTask))
+      setPrograms(migratedPrograms)
+      setWorkList(migratedTasks)
+      localStorage.setItem('portalAoptiPrograms', JSON.stringify(migratedPrograms))
+      localStorage.setItem('portalAoptiWorkList', JSON.stringify(migratedTasks))
+      window.dispatchEvent(new Event('portalPrograms-changed'))
+      window.dispatchEvent(new Event('portalWorkList-changed'))
     }
 
-    resetTaskForm()
+    submitTask().catch(() => alert('Gagal menyimpan tugas'))
   }
 
   function handleEditTask(item) {
@@ -469,19 +487,35 @@ function WorkListPage() {
 
   function handleDeleteTask(id) {
     if (confirm('Hapus tugas ini?')) {
-      setWorkList((prev) => prev.filter((item) => item.id !== id))
+      deleteWorkItem(id)
+        .then(() => Promise.all([getPrograms(selectedYear), getWorkList(selectedYear)]))
+        .then(([programResponse, workListResponse]) => {
+          const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(programResponse || [], (workListResponse.worklist || []).map(normalizeTask))
+          setPrograms(migratedPrograms)
+          setWorkList(migratedTasks)
+          localStorage.setItem('portalAoptiPrograms', JSON.stringify(migratedPrograms))
+          localStorage.setItem('portalAoptiWorkList', JSON.stringify(migratedTasks))
+          window.dispatchEvent(new Event('portalPrograms-changed'))
+          window.dispatchEvent(new Event('portalWorkList-changed'))
+        })
+        .catch(() => alert('Gagal menghapus tugas'))
     }
   }
 
   function handleProgressChange(id, newProgress) {
     const progress = normalizeProgress(newProgress)
-    setWorkList((prev) =>
-      prev.map((item) =>
-        item.id === id
-          ? { ...item, progress, status: statusFromProgress(progress) }
-          : item
-      )
-    )
+    updateWorkItemProgress(id, { progress })
+      .then(() => Promise.all([getPrograms(selectedYear), getWorkList(selectedYear)]))
+      .then(([programResponse, workListResponse]) => {
+        const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(programResponse || [], (workListResponse.worklist || []).map(normalizeTask))
+        setPrograms(migratedPrograms)
+        setWorkList(migratedTasks)
+        localStorage.setItem('portalAoptiPrograms', JSON.stringify(migratedPrograms))
+        localStorage.setItem('portalAoptiWorkList', JSON.stringify(migratedTasks))
+        window.dispatchEvent(new Event('portalPrograms-changed'))
+        window.dispatchEvent(new Event('portalWorkList-changed'))
+      })
+      .catch(() => alert('Gagal mengupdate progress'))
   }
 
   function resetTaskForm() {
@@ -983,134 +1017,89 @@ function WorkListPage() {
           </div>
         </div>
 
-        {/* Table 2: Tugas (shown when program is selected) */}
-        <div className={`wl-table-section wl-table-tasks ${selectedProgram ? 'active' : ''}`}>
-          <div className="wl-table-header">
-            <h3>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M9 11l3 3L22 4" />
-                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-              </svg>
-              Daftar Tugas
-            </h3>
-            {selectedProgram && (
-              <span className="wl-table-count">
-                {selectedGroup?.tasks.length || 0} tugas dari {selectedProgram.name}
-              </span>
-            )}
-          </div>
-          <div className="wl-table-wrapper">
-            {!selectedProgram ? (
-              <div className="wl-table-empty-state">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+        {selectedProgram && (
+          <div className="wl-table-section wl-program-detail-panel active">
+            <div className="wl-table-header">
+              <h3>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M9 11l3 3L22 4" />
                   <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
                 </svg>
-                <p>Pilih program kerja di atas untuk melihat daftar tugas</p>
-              </div>
-            ) : selectedGroup?.tasks.length === 0 ? (
-              <div className="wl-table-empty-state">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M9 11l3 3L22 4" />
-                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-                </svg>
-                <p>Belum ada tugas dalam program ini</p>
-                {canEdit && (
-                  <button className="wl-btn wl-btn-primary wl-btn-sm" onClick={() => { setShowTaskForm(true); setTaskFormData((prev) => ({ ...prev, programId: selectedProgramId })) }}>
-                    Tambah Tugas
-                  </button>
-                )}
-              </div>
-            ) : (
-              <table className="wl-table wl-task-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: '40px' }}>#</th>
-                    <th>Nama Tugas</th>
-                    <th style={{ width: '120px' }}>PIC</th>
-                    <th style={{ width: '100px' }}>Mulai</th>
-                    <th style={{ width: '100px' }}>Selesai</th>
-                    <th style={{ width: '140px' }}>Progress</th>
-                    <th style={{ width: '80px' }}>Aksi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selectedGroup?.tasks.map((task, index) => {
-                    const statusInfo = getStatusInfo(task.status)
-                    return (
-                      <tr key={task.id} className={`wl-task-row ${task.status === 'completed' ? 'completed' : ''}`}>
-                        <td className="wl-row-number">{index + 1}</td>
-                        <td className="wl-task-name">
-                          <div className="wl-task-name-content">
-                            <span className="wl-task-name-text">{task.taskName}</span>
-                            {task.location && (
-                              <span className="wl-task-location">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-                                  <circle cx="12" cy="10" r="3" />
-                                </svg>
-                                {task.location}
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="wl-task-pic">{task.pic || '-'}</td>
-                        <td className="wl-task-date">{formatDateShort(task.startDate)}</td>
-                        <td className="wl-task-date">{formatDateShort(task.endDate)}</td>
-                        <td className="wl-task-progress">
-                          {canEdit ? (
-                            <select
-                              className="wl-progress-select"
-                              value={task.progress}
-                              onChange={(e) => handleProgressChange(task.id, e.target.value)}
-                              style={{ background: statusInfo.bg, color: statusInfo.color }}
-                            >
-                              {PROGRESS_OPTIONS.map((opt) => (
-                                <option key={opt.value} value={opt.value}>{opt.label}</option>
-                              ))}
-                            </select>
-                          ) : (
-                            <span className="wl-progress-badge" style={{ background: statusInfo.bg, color: statusInfo.color }}>
-                              {statusInfo.label}
+                {selectedProgram.name}
+              </h3>
+              <span className="wl-table-count">{selectedGroup?.tasks.length || 0} tugas</span>
+            </div>
+            <div className="wl-program-detail-list">
+              {selectedGroup?.tasks.length > 0 ? (
+                selectedGroup.tasks.map((task, index) => {
+                  const statusInfo = getStatusInfo(task.status)
+                  return (
+                    <div key={task.id} className={`wl-program-detail-item ${task.status === 'completed' ? 'completed' : ''}`}>
+                      <div className="wl-program-detail-index">{index + 1}</div>
+                      <div className="wl-program-detail-main">
+                        <div className="wl-task-name-content">
+                          <span className="wl-task-name-text">{task.taskName}</span>
+                          {task.location && (
+                            <span className="wl-task-location">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                                <circle cx="12" cy="10" r="3" />
+                              </svg>
+                              {task.location}
                             </span>
                           )}
-                        </td>
-                        <td className="wl-actions">
-                          {canEdit && (
-                            <>
-                              <button
-                                className="wl-action-btn wl-action-edit"
-                                onClick={() => handleEditTask(task)}
-                                title="Edit"
-                              >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-                                  <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                </svg>
-                              </button>
-                              {canDelete && (
-                                <button
-                                  className="wl-action-btn wl-action-delete"
-                                  onClick={() => handleDeleteTask(task.id)}
-                                  title="Hapus"
-                                >
-                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <polyline points="3 6 5 6 21 6" />
-                                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-                                  </svg>
-                                </button>
-                              )}
-                            </>
+                        </div>
+                        <div className="wl-task-meta-grid">
+                          <span><strong>PIC:</strong> {task.pic || '-'}</span>
+                          <span><strong>Mulai:</strong> {formatDateShort(task.startDate)}</span>
+                          <span><strong>Selesai:</strong> {formatDateShort(task.endDate)}</span>
+                          <span><strong>Status:</strong> {statusInfo.label}</span>
+                        </div>
+                        <div className="wl-progress-bar-wrapper">
+                          <div className="wl-progress-bar">
+                            <div className="wl-progress-bar-fill" style={{ width: `${task.progress}%` }}></div>
+                          </div>
+                          <span className="wl-progress-value">{task.progress}%</span>
+                        </div>
+                      </div>
+                      {canEdit && (
+                        <div className="wl-program-detail-actions">
+                          <button className="wl-action-btn wl-action-edit" onClick={() => handleEditTask(task)} title="Edit">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                            </svg>
+                          </button>
+                          {canDelete && (
+                            <button className="wl-action-btn wl-action-delete" onClick={() => handleDeleteTask(task.id)} title="Hapus">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                              </svg>
+                            </button>
                           )}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="wl-table-empty-state">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M9 11l3 3L22 4" />
+                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                  </svg>
+                  <p>Belum ada tugas dalam program ini</p>
+                  {canEdit && (
+                    <button className="wl-btn wl-btn-primary wl-btn-sm" onClick={() => { setShowTaskForm(true); setTaskFormData((prev) => ({ ...prev, programId: selectedProgramId })) }}>
+                      Tambah Tugas
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )

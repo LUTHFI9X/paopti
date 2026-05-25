@@ -1,25 +1,23 @@
 import { useEffect, useState } from 'react'
 import { useUser, ROLES } from '../context/UserContext'
+import {
+  createAuditPlan,
+  deleteAuditPlan,
+  deleteWorkItem,
+  getAuditPlans,
+  getWorkList,
+} from '../services/spiHubApi'
 
 const auditPhases = [
-  { id: 'entry_meeting', label: 'Entry Meeting', value: 0, icon: 'clipboard-list' },
-  { id: 'konfirmasi', label: 'Konfirmasi Audit', value: 25, icon: 'check-circle' },
-  { id: 'expose', label: 'Expose Meeting', value: 50, icon: 'presentation' },
-  { id: 'exit_meeting', label: 'Exit Meeting', value: 75, icon: 'flag' },
-  { id: 'lainnya', label: 'Lainnya', value: 100, icon: 'bookmark' },
+  { id: 'entry_meeting', label: 'Entry Meeting', value: 25, icon: 'clipboard-list' },
+  { id: 'konfirmasi', label: 'Konfirmasi Audit', value: 50, icon: 'check-circle' },
+  { id: 'expose', label: 'Expose Meeting', value: 75, icon: 'presentation' },
+  { id: 'exit_meeting', label: 'Exit Meeting', value: 100, icon: 'flag' },
 ]
 
 const tahapTypes = [
   { id: 'audit', label: 'Tahap Audit', icon: 'clipboard-check' },
   { id: 'non_audit', label: 'Tahap Non Audit', icon: 'file-text' },
-]
-
-const percentageOptions = [
-  { value: 0, label: '0%' },
-  { value: 25, label: '25%' },
-  { value: 50, label: '50%' },
-  { value: 75, label: '75%' },
-  { value: 100, label: '100%' },
 ]
 
 const phaseIcons = {
@@ -49,11 +47,6 @@ const phaseIcons = {
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
       <line x1="4" y1="22" x2="4" y2="15" />
-    </svg>
-  ),
-  'bookmark': (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
     </svg>
   ),
   'clipboard-check': (
@@ -169,6 +162,28 @@ function isWeekend(date) {
   return d.getDay() === 0 || d.getDay() === 6
 }
 
+function normalizeWorkItem(item) {
+  const startDate = item.startDate || item.start_date || item.date || ''
+  const endDate = item.endDate || item.end_date || item.date || startDate
+
+  return {
+    id: item.id,
+    taskId: item.taskId || item.task_id || '',
+    programId: item.programId || item.program_id || '',
+    programName: item.programName || item.program_name || '',
+    taskName: item.taskName || item.task_name || '',
+    startDate,
+    endDate,
+    location: item.location || '',
+    time: item.time || '',
+    progress: Number(item.progress) || 0,
+    status: item.status || 'scheduled',
+    year: Number(item.year) || new Date().getFullYear(),
+    date: startDate,
+    pic: item.pic || '',
+  }
+}
+
 function AuditPlanPage() {
   const { user } = useUser()
   const isKSPI = user?.role === ROLES.KSPI
@@ -188,7 +203,6 @@ function AuditPlanPage() {
   const [selectedPhase, setSelectedPhase] = useState(auditPhases[0].id)
   const [selectedTahapType, setSelectedTahapType] = useState('audit')
   const [nonAuditDescription, setNonAuditDescription] = useState('')
-  const [nonAuditPercentage, setNonAuditPercentage] = useState(0)
   const [dateWarning, setDateWarning] = useState('')
   const [formTeam, setFormTeam] = useState([
     { id: 1, name: '', role: 'pic' },
@@ -203,54 +217,80 @@ function AuditPlanPage() {
   // Agendas state
   const [agendas, setAgendas] = useState([])
 
-  // Load WorkList data
   useEffect(() => {
-    const saved = localStorage.getItem('portalAoptiWorkList')
-    if (saved) {
-      const workList = JSON.parse(saved)
-      setWorkListData(workList)
+    let cancelled = false
 
-      // Convert WorkList to agendas with initial phases
-      const workListAgendas = workList.map((item, idx) => ({
-        id: `wl-${item.id}`,
-        taskId: item.id,
-        programName: item.programName,
-        taskName: item.taskName,
-        startDate: item.startDate || item.date,
-        endDate: item.endDate || item.startDate || item.date,
-        location: item.location,
-        progress: item.progress,
-        status: item.status,
-        completed: item.status === 'completed',
-        isAgenda: false,
-        phases: [
-          { phase: 'Entry Meeting', date: item.startDate || item.date, done: item.progress >= 0 },
-          { phase: 'Konfirmasi Audit', date: '', done: item.progress >= 25 },
-          { phase: 'Expose Meeting', date: '', done: item.progress >= 75 },
-          { phase: 'Exit Meeting', date: '', done: item.progress >= 100 },
-        ],
-      }))
+    async function loadData() {
+      try {
+        const [workListResponse, auditPlanResponse] = await Promise.all([
+          getWorkList(selectedYear),
+          getAuditPlans(selectedYear),
+        ])
 
-      setAgendas((prev) => {
-        const workIds = workListAgendas.map((w) => w.id)
-        const existingManual = prev.filter((a) => !a.id.startsWith('wl-')).map((a) => ({ ...a, isAgenda: true }))
-        return [...workListAgendas, ...existingManual]
-      })
-    }
-  }, [])
+        if (cancelled) return
 
-  // Listen for WorkList updates
-  useEffect(() => {
-    const handleStorageChange = () => {
-      const saved = localStorage.getItem('portalAoptiWorkList')
-      if (saved) {
-        const workList = JSON.parse(saved)
+        const workList = (workListResponse.worklist || []).map(normalizeWorkItem)
         setWorkListData(workList)
+
+        const workListAgendas = workList.map((item) => ({
+          id: `wl-${item.id}`,
+          taskId: item.id,
+          programName: item.programName,
+          taskName: item.taskName,
+          startDate: item.startDate || item.date,
+          endDate: item.endDate || item.startDate || item.date,
+          location: item.location,
+          progress: item.progress,
+          status: item.status,
+          completed: item.status === 'completed',
+          isAgenda: false,
+          tahapType: 'audit',
+          phaseLabel: 'Program Kerja',
+          time: item.time || '',
+          phases: [
+            { phase: 'Entry', date: item.startDate || item.date, done: item.progress >= 0 },
+            { phase: 'Konfirmasi', date: '', done: item.progress >= 25 },
+            { phase: 'Expose', date: '', done: item.progress >= 50 },
+            { phase: 'Exit', date: '', done: item.progress >= 75 },
+          ],
+        }))
+
+        const auditPlanAgendas = (auditPlanResponse || []).map((plan) => ({
+          id: plan.id,
+          taskId: plan.task_id,
+          programName: plan.program_name,
+          taskName: plan.task_name,
+          startDate: plan.start_date,
+          endDate: plan.end_date || plan.start_date,
+          location: plan.location,
+          progress: Number(plan.progress) || 0,
+          status: plan.status || 'scheduled',
+          completed: Boolean(plan.completed),
+          isAgenda: Boolean(plan.is_agenda),
+          tahapType: plan.tahap_type || 'audit',
+          phaseLabel: plan.phase_label || '',
+          customPercentage: Number(plan.custom_percentage) || 0,
+          note: plan.note || '',
+          time: plan.time || '',
+          team: typeof plan.team === 'string' ? JSON.parse(plan.team || '[]') : (plan.team || []),
+          phases: typeof plan.phases === 'string' ? JSON.parse(plan.phases || '[]') : (plan.phases || []),
+        }))
+
+        setAgendas([...workListAgendas, ...auditPlanAgendas])
+      } catch (error) {
+        if (!cancelled) {
+          setWorkListData([])
+          setAgendas([])
+        }
       }
     }
-    window.addEventListener('portalWorkList-changed', handleStorageChange)
-    return () => window.removeEventListener('portalWorkList-changed', handleStorageChange)
-  }, [])
+
+    loadData()
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedYear])
 
   const calendarDays = buildCalendarDays(selectedYear, selectedMonth)
 
@@ -340,87 +380,83 @@ function AuditPlanPage() {
     const filledTeam = formTeam.filter((m) => m.name.trim())
 
     // Create new agenda entry
-    let progress = 0
-    let phaseLabel = ''
-    let tahapType = selectedTahapType
+    const phaseConfig = auditPhases.find((p) => p.id === selectedPhase)
+    const progress = selectedTahapType === 'audit' ? (phaseConfig?.value || 0) : 0
+    const phaseLabel = selectedTahapType === 'audit' ? (phaseConfig?.label || '') : nonAuditDescription.trim()
+    const phases = [
+      { phase: 'Entry', date: selectedPhase === 'entry_meeting' ? formDate : '', done: selectedPhase === 'entry_meeting' },
+      { phase: 'Konfirmasi', date: selectedPhase === 'konfirmasi' ? formDate : '', done: selectedPhase === 'konfirmasi' },
+      { phase: 'Expose', date: selectedPhase === 'expose' ? formDate : '', done: selectedPhase === 'expose' },
+      { phase: 'Exit', date: selectedPhase === 'exit_meeting' ? formDate : '', done: selectedPhase === 'exit_meeting' },
+    ]
 
-    if (selectedTahapType === 'audit') {
-      const phaseConfig = auditPhases.find((p) => p.id === selectedPhase)
-      progress = phaseConfig?.value || 0
-      phaseLabel = phaseConfig?.label || ''
-
-      const newAgenda = {
-        id: `ap-${Date.now()}`,
-        taskId: selectedTask.id,
-        programName: selectedTask.programName,
-        taskName: selectedTask.taskName,
-        startDate: formDate,
-        endDate: formDate,
-        location: selectedTask.location,
-        progress,
-        status: 'in_progress',
-        completed: false,
-        isAgenda: true,
-        tahapType: 'audit',
-        team: filledTeam.map(m => ({ role: m.role, name: m.name })),
-        note: formNote,
-        phases: [
-          { phase: 'Entry Meeting', date: selectedPhase === 'entry_meeting' ? formDate : '', done: selectedPhase === 'entry_meeting' },
-          { phase: 'Konfirmasi Audit', date: selectedPhase === 'konfirmasi' ? formDate : '', done: selectedPhase === 'konfirmasi' },
-          { phase: 'Expose Meeting', date: selectedPhase === 'expose' ? formDate : '', done: selectedPhase === 'expose' },
-          { phase: 'Exit Meeting', date: selectedPhase === 'exit_meeting' ? formDate : '', done: selectedPhase === 'exit_meeting' },
-        ],
-      }
-
-      // Also update the WorkList agenda's phases to mark this phase as done
-      setAgendas((prev) => {
-        const updated = prev.map((a) => {
-          if ((a.id === `wl-${selectedTaskId}` || a.taskId === selectedTaskId) && a.id.startsWith('wl-')) {
-            const updatedPhases = a.phases.map((p, idx) => {
-              if (idx === 0 && selectedPhase === 'entry_meeting') return { ...p, done: true, date: formDate }
-              if (idx === 1 && selectedPhase === 'konfirmasi') return { ...p, done: true, date: formDate }
-              if (idx === 2 && selectedPhase === 'expose') return { ...p, done: true, date: formDate }
-              if (idx === 3 && selectedPhase === 'exit_meeting') return { ...p, done: true, date: formDate }
-              return p
-            })
-            return { ...a, phases: updatedPhases }
-          }
-          return a
-        })
-        return [...updated, newAgenda]
-      })
-    } else {
-      // Tahap Non Audit
-      progress = nonAuditPercentage
-      phaseLabel = nonAuditDescription.trim()
-
-      const newAgenda = {
-        id: `ap-${Date.now()}`,
-        taskId: selectedTask.id,
-        programName: selectedTask.programName,
-        taskName: selectedTask.taskName,
-        startDate: formDate,
-        endDate: formDate,
-        location: selectedTask.location,
-        progress,
-        status: 'in_progress',
-        completed: false,
-        isAgenda: true,
-        tahapType: 'non_audit',
-        phaseLabel: nonAuditDescription.trim(),
-        customPercentage: nonAuditPercentage,
-        team: filledTeam.map(m => ({ role: m.role, name: m.name })),
-        note: formNote,
-      }
-
-      setAgendas((prev) => [...prev, newAgenda])
+    const newAgenda = {
+      id: `ap-${Date.now()}`,
+      taskId: selectedTask.id,
+      programName: selectedTask.programName,
+      taskName: selectedTask.taskName,
+      startDate: formDate,
+      endDate: formDate,
+      location: selectedTask.location,
+      progress,
+      status: 'in_progress',
+      completed: false,
+      isAgenda: true,
+      tahapType: selectedTahapType,
+      phaseLabel,
+      customPercentage: progress,
+      time: formTime,
+      team: filledTeam.map((m) => ({ role: m.role, name: m.name })),
+      note: formNote,
+      phases,
     }
 
-    setFormMessage(selectedTahapType === 'audit' ? 'Tahap Audit berhasil diupdate!' : 'Tahap Non Audit berhasil ditambahkan!')
-    setFormDate(isoDate(now.getFullYear(), now.getMonth(), now.getDate()))
-    setNonAuditDescription('')
-    setNonAuditPercentage(0)
-    setTimeout(() => setFormMessage(''), 3000)
+    createAuditPlan({
+      id: newAgenda.id,
+      task_id: newAgenda.taskId,
+      program_name: newAgenda.programName,
+      task_name: newAgenda.taskName,
+      start_date: newAgenda.startDate,
+      end_date: newAgenda.endDate,
+      location: newAgenda.location,
+      progress: newAgenda.progress,
+      status: newAgenda.status,
+      completed: newAgenda.completed,
+      is_agenda: newAgenda.isAgenda,
+      tahap_type: newAgenda.tahapType,
+      phase_label: newAgenda.phaseLabel,
+      custom_percentage: newAgenda.customPercentage,
+      note: newAgenda.note,
+      time: newAgenda.time,
+      team: newAgenda.team,
+      phases: newAgenda.phases,
+    })
+      .then((createdAgenda) => {
+        const storedAgenda = createdAgenda || newAgenda
+        setAgendas((prev) => {
+          const updated = prev.map((a) => {
+            if (a.id === `wl-${selectedTaskId}` && selectedTahapType === 'audit') {
+              return {
+                ...a,
+                phases: a.phases.map((phase) => (
+                  phase.phase === phaseLabel
+                    ? { ...phase, done: true, date: formDate }
+                    : phase
+                )),
+              }
+            }
+            return a
+          })
+          return [...updated, storedAgenda]
+        })
+
+        setFormMessage(selectedTahapType === 'audit' ? 'Tahap Audit berhasil diupdate!' : 'Tahap Non Audit berhasil ditambahkan!')
+        setFormDate(isoDate(now.getFullYear(), now.getMonth(), now.getDate()))
+        setNonAuditDescription('')
+        setFormTime('')
+        setTimeout(() => setFormMessage(''), 3000)
+      })
+      .catch(() => setFormMessage('Gagal menyimpan agenda'))
   }
 
   // Task selection handler
@@ -443,29 +479,48 @@ function AuditPlanPage() {
     const agenda = agendas.find((a) => a.id === agendaId)
     if (!agenda) return
 
-    // Check if this agenda is from workList (wl- prefix)
     if (agenda.id.startsWith('wl-') || agenda.taskId) {
-      // This is from WorkList - delete from both WorkList AND agendas
       if (confirm(`Hapus "${agenda.taskName}" dari Program Kerja dan Kalender?`)) {
         const taskIdToDelete = agenda.taskId || agenda.id.replace('wl-', '')
 
-        // Remove from WorkList (localStorage)
-        const savedWorkList = localStorage.getItem('portalAoptiWorkList')
-        if (savedWorkList) {
-          const workList = JSON.parse(savedWorkList)
-          const updatedWorkList = workList.filter((item) => item.id !== taskIdToDelete)
-          localStorage.setItem('portalAoptiWorkList', JSON.stringify(updatedWorkList))
-          // Dispatch event to notify WorkListPage
-          window.dispatchEvent(new Event('portalWorkList-changed'))
-        }
-
-        // Remove from agendas state
-        setAgendas((prev) => prev.filter((a) => a.id !== agendaId))
+        deleteWorkItem(taskIdToDelete)
+          .then(() => getWorkList(selectedYear))
+          .then((response) => {
+            const workList = (response.worklist || []).map(normalizeWorkItem)
+            setWorkListData(workList)
+            const workListAgendas = workList.map((item) => ({
+              id: `wl-${item.id}`,
+              taskId: item.id,
+              programName: item.programName,
+              taskName: item.taskName,
+              startDate: item.startDate || item.date,
+              endDate: item.endDate || item.startDate || item.date,
+              location: item.location,
+              progress: item.progress,
+              status: item.status,
+              completed: item.status === 'completed',
+              isAgenda: false,
+              tahapType: 'audit',
+              phaseLabel: 'Program Kerja',
+              time: item.time || '',
+              phases: [
+                { phase: 'Entry', date: item.startDate || item.date, done: item.progress >= 0 },
+                { phase: 'Konfirmasi', date: '', done: item.progress >= 25 },
+                { phase: 'Expose', date: '', done: item.progress >= 50 },
+                { phase: 'Exit', date: '', done: item.progress >= 75 },
+              ],
+            }))
+            setAgendas((prev) => [...workListAgendas, ...prev.filter((a) => !a.id.startsWith('wl-') && a.id !== agendaId)])
+            localStorage.setItem('portalAoptiWorkList', JSON.stringify(workList))
+            window.dispatchEvent(new Event('portalWorkList-changed'))
+          })
+          .catch(() => setFormMessage('Gagal menghapus agenda'))
       }
     } else {
-      // This is a manual agenda - just delete from agendas
       if (confirm(`Hapus "${agenda.taskName}" dari daftar agenda?`)) {
-        setAgendas((prev) => prev.filter((a) => a.id !== agendaId))
+        deleteAuditPlan(agendaId)
+          .then(() => setAgendas((prev) => prev.filter((a) => a.id !== agendaId)))
+          .catch(() => setFormMessage('Gagal menghapus agenda'))
       }
     }
   }
@@ -643,12 +698,12 @@ function AuditPlanPage() {
                         const status = getStatus(agenda.startDate, agenda.completed)
                         const color = statusConfig[status].color
                         const donePhase = agenda.phases.find((p) => p.done)
-                        const displayName = donePhase
-                          ? `ISO - ${donePhase.phase}`
-                          : agenda.taskName
+                        const displayName = `${agenda.programName} - ${agenda.taskName}`
+                        const phaseText = donePhase ? donePhase.phase : (agenda.phaseLabel || 'Program Kerja')
                         return (
                           <div key={agenda.id} className="ap-day-task-pill" style={{ borderLeftColor: color }}>
                             <span className="ap-day-task-name">{displayName}</span>
+                            <span className="ap-day-task-meta">{phaseText}{agenda.time ? ` • ${agenda.time}` : ''} • {agenda.progress}%</span>
                           </div>
                         )
                       })}
@@ -696,9 +751,19 @@ function AuditPlanPage() {
                         </span>
                       )}
                     </div>
-                    <h4>{agenda.taskName} - {phaseLabel}</h4>
+                    <h4>{agenda.programName} - {agenda.taskName}</h4>
                     <div className="ap-agenda-meta">
                       <span className="ap-program-tag">{agenda.programName}</span>
+                      <span className="ap-program-tag">{agenda.phaseLabel || phaseLabel}</span>
+                      {agenda.time && (
+                        <span className="ap-location-tag">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <circle cx="12" cy="12" r="10" />
+                            <polyline points="12 6 12 12 16 14" />
+                          </svg>
+                          {agenda.time}
+                        </span>
+                      )}
                       {agenda.location && (
                         <span className="ap-location-tag">
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -966,27 +1031,6 @@ function AuditPlanPage() {
                     placeholder="Contoh: Review Dokumen, Koordinasi Internal"
                   />
                 </div>
-                <div className="ap-form-group">
-                  <label>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <circle cx="12" cy="12" r="10" />
-                      <polyline points="12 6 12 12 16 14" />
-                    </svg>
-                    Persentase
-                  </label>
-                  <div className="ap-percentage-options">
-                    {percentageOptions.map((opt) => (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        className={`ap-percentage-option ${nonAuditPercentage === opt.value ? 'active' : ''}`}
-                        onClick={() => setNonAuditPercentage(opt.value)}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
               </div>
             )}
 
@@ -1074,24 +1118,6 @@ function AuditPlanPage() {
           </form>
         </div>
 
-        {/* Quick Stats */}
-        <div className="ap-quick-stats">
-          <h4>Progress Overview</h4>
-          <div className="ap-quick-stat-list">
-            {['Entry Meeting', 'Konfirmasi', 'Expose', 'Exit Meeting'].map((label, idx) => {
-              const count = filteredAgendas.filter((a) => {
-                const phase = a.phases?.[idx]
-                return phase?.done
-              }).length
-              return (
-                <div key={label} className="ap-quick-stat-item">
-                  <span className="ap-quick-stat-label">{label}</span>
-                  <span className="ap-quick-stat-value">{count}/{totalCount}</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
       </aside>
       )}
 

@@ -1,74 +1,179 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { useUser } from './UserContext'
+import { getChatMessages, sendChatMessage } from '../services/spiHubApi'
 
 const ChatContext = createContext(null)
 
-const STORAGE_KEY = 'portalAoptiChats'
+function buildPrivateChatId(userId1, userId2) {
+  return [userId1, userId2].sort().join('-')
+}
+
+function mapMessage(message, currentUserId) {
+  return {
+    id: `msg-${message.id}`,
+    senderId: message.sender,
+    senderName: message.sender_name,
+    content: message.message,
+    timestamp: message.created_at,
+    read: message.sender === currentUserId,
+  }
+}
+
+function createAutoGroup(users) {
+  return {
+    id: 'team-group',
+    name: 'Grup AOPTI',
+    type: 'group',
+    description: 'Grup otomatis berisi seluruh user database',
+    isDefault: true,
+    participants: users.map((user) => user.id),
+    participantNames: users.reduce((names, user) => {
+      names[user.id] = user.name
+      return names
+    }, {}),
+    messages: [],
+    createdAt: new Date().toISOString(),
+  }
+}
 
 function ChatProvider({ children }) {
+  const { user, users } = useUser()
   const [chats, setChats] = useState({})
   const [isLoading, setIsLoading] = useState(true)
 
-  // Load chats from localStorage
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) {
-      setChats(JSON.parse(stored))
-    }
-    setIsLoading(false)
-  }, [])
+    let cancelled = false
 
-  // Save chats to localStorage
-  useEffect(() => {
-    if (!isLoading && Object.keys(chats).length > 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(chats))
-    }
-  }, [chats, isLoading])
+    async function loadChats() {
+      if (!user?.id || users.length === 0) {
+        setChats({})
+        setIsLoading(false)
+        return
+      }
 
-  // Initialize default team group
-  useEffect(() => {
-    if (!isLoading && Object.keys(chats).length === 0) {
-      setChats({
-        'team-group': {
-          id: 'team-group',
-          name: 'Team Group',
-          type: 'group',
-          description: 'Grup diskusi Tim Audit AOPTI',
-          isDefault: true,
-          participants: [],
-          messages: [],
-          createdAt: new Date().toISOString(),
-        },
-      })
-    }
-  }, [isLoading, chats])
+      setIsLoading(true)
 
-  const sendMessage = useCallback((chatId, senderId, senderName, content) => {
+      const autoGroup = createAutoGroup(users)
+      const privateChats = users
+        .filter((candidate) => candidate.id !== user.id)
+        .map((candidate) => {
+          const chatId = buildPrivateChatId(user.id, candidate.id)
+          return {
+            id: chatId,
+            name: candidate.name,
+            type: 'private',
+            participants: [user.id, candidate.id],
+            participantNames: {
+              [user.id]: user.name,
+              [candidate.id]: candidate.name,
+            },
+            messages: [],
+            createdAt: new Date().toISOString(),
+          }
+        })
+
+      const baseChats = {
+        [autoGroup.id]: autoGroup,
+        ...privateChats.reduce((acc, chat) => {
+          acc[chat.id] = chat
+          return acc
+        }, {}),
+      }
+
+      try {
+        const groupMessages = await getChatMessages({ type: 'group', last_id: 0, limit: 200 })
+        if (cancelled) return
+
+        const privateMessages = await Promise.all(
+          users
+            .filter((candidate) => candidate.id !== user.id)
+            .map(async (candidate) => {
+              const chatId = buildPrivateChatId(user.id, candidate.id)
+              const messages = await getChatMessages({
+                type: 'private',
+                user_id: candidate.id,
+                current_user_id: user.id,
+                last_id: 0,
+                limit: 200,
+              })
+              return [chatId, messages]
+            })
+        )
+
+        if (cancelled) return
+
+        const nextChats = { ...baseChats }
+        nextChats[autoGroup.id] = {
+          ...autoGroup,
+          messages: groupMessages.map((message) => mapMessage(message, user.id)),
+          lastActivity: groupMessages[groupMessages.length - 1]?.created_at || autoGroup.createdAt,
+          lastMessage: groupMessages[groupMessages.length - 1]?.message || '',
+        }
+
+        privateMessages.forEach(([chatId, messages]) => {
+          if (!nextChats[chatId]) return
+          nextChats[chatId] = {
+            ...nextChats[chatId],
+            messages: messages.map((message) => mapMessage(message, user.id)),
+            lastActivity: messages[messages.length - 1]?.created_at || nextChats[chatId].createdAt,
+            lastMessage: messages[messages.length - 1]?.message || '',
+          }
+        })
+
+        setChats(nextChats)
+      } catch (error) {
+        if (!cancelled) {
+          setChats(baseChats)
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false)
+        }
+      }
+    }
+
+    loadChats()
+
+    return () => {
+      cancelled = true
+    }
+  }, [user?.id, user?.name, users])
+
+  const sendMessage = useCallback(async (chatId, senderId, senderName, content) => {
     if (!content.trim()) return
 
-    const message = {
-      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      senderId,
-      senderName,
-      content: content.trim(),
-      timestamp: new Date().toISOString(),
-      read: false,
+    const chat = chats[chatId]
+    if (!chat) return
+
+    const payload = {
+      sender: senderId,
+      sender_name: senderName,
+      message: content.trim(),
+      message_type: chat.type === 'private' ? 'private' : 'group',
+      ...(chat.type === 'private' ? { recipient: chat.participants.find((participant) => participant !== senderId) } : {}),
     }
 
+    const response = await sendChatMessage(payload)
+    const storedMessage = response?.data || response
+    if (!storedMessage) return
+
+    const nextMessage = mapMessage(storedMessage, senderId)
+
     setChats((prev) => {
-      const chat = prev[chatId]
-      if (!chat) return prev
+      const existingChat = prev[chatId]
+      if (!existingChat) return prev
 
       return {
         ...prev,
         [chatId]: {
-          ...chat,
-          messages: [...chat.messages, message],
-          lastActivity: message.timestamp,
-          lastMessage: content.trim(),
+          ...existingChat,
+          messages: [...existingChat.messages, nextMessage],
+          lastActivity: nextMessage.timestamp,
+          lastMessage: nextMessage.content,
         },
       }
     })
-  }, [])
+  }, [chats])
 
   const markAsRead = useCallback((chatId, userId) => {
     setChats((prev) => {
@@ -97,7 +202,7 @@ function ChatProvider({ children }) {
   }, [chats])
 
   const createPrivateChat = useCallback((userId1, userId2, user1Name, user2Name) => {
-    const chatId = [userId1, userId2].sort().join('-')
+    const chatId = buildPrivateChatId(userId1, userId2)
 
     setChats((prev) => {
       if (prev[chatId]) return prev
@@ -128,7 +233,7 @@ function ChatProvider({ children }) {
           name,
           type: 'group',
           description: description || '',
-          participants: [...participants, creatorId],
+          participants: [...new Set([...participants, creatorId])],
           participantNames: {},
           messages: [],
           createdAt: new Date().toISOString(),

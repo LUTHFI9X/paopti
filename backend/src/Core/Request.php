@@ -10,6 +10,7 @@ final class Request
         public readonly array $query,
         public readonly array $body,
         public readonly array $server,
+        public readonly array $params = [],
     ) {
     }
 

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { getUsers, login as apiLogin } from '../services/spiHubApi'
 
 const UserContext = createContext(null)
 
@@ -58,30 +59,85 @@ const initialUsers = [
 
 function UserProvider({ children }) {
   const [user, setUser] = useState(null)
-  const [users, setUsers] = useState([])
+  const [users, setUsers] = useState(initialUsers)
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    const storedUsers = localStorage.getItem('portalAoptiUsers')
-    if (storedUsers) {
-      setUsers(JSON.parse(storedUsers))
-    } else {
-      setUsers(initialUsers)
-      localStorage.setItem('portalAoptiUsers', JSON.stringify(initialUsers))
-    }
-
     const storedUser = localStorage.getItem('portalAoptiCurrentUser')
     if (storedUser) {
       setUser(JSON.parse(storedUser))
     }
-    setIsLoading(false)
+
+    let cancelled = false
+
+    async function loadUsers() {
+      try {
+        const apiUsers = await getUsers()
+        if (cancelled) return
+        const normalizedUsers = apiUsers.length > 0 ? apiUsers : initialUsers
+        setUsers(normalizedUsers)
+        localStorage.setItem('portalAoptiUsers', JSON.stringify(normalizedUsers))
+      } catch (error) {
+        if (cancelled) return
+        const storedUsers = localStorage.getItem('portalAoptiUsers')
+        if (storedUsers) {
+          setUsers(JSON.parse(storedUsers))
+        } else {
+          setUsers(initialUsers)
+          localStorage.setItem('portalAoptiUsers', JSON.stringify(initialUsers))
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false)
+        }
+      }
+    }
+
+    loadUsers()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const login = useCallback((username, password) => {
-    const foundUser = users.find(
-      (u) => u.username === username && u.password === password
-    )
-    if (foundUser) {
+  const login = useCallback(async (username, password) => {
+    try {
+      const result = await apiLogin(username, password)
+      const userWithoutPassword = {
+        id: result.user.id,
+        username: result.user.username,
+        name: result.user.name,
+        role: result.user.role,
+      }
+
+      setUser(userWithoutPassword)
+      localStorage.setItem('portalAoptiCurrentUser', JSON.stringify(userWithoutPassword))
+      localStorage.setItem('spiHubToken', result.token || 'logged-in')
+      localStorage.setItem('spiHubUserName', userWithoutPassword.name)
+
+      const logEntry = {
+        id: `log-${Date.now()}`,
+        userId: result.user.id,
+        user: result.user.name,
+        userRole: result.user.role,
+        action: 'Login',
+        details: `User ${result.user.name} (${result.user.username}) berhasil masuk ke sistem`,
+        timestamp: new Date().toISOString(),
+        ipAddress: '127.0.0.1',
+        category: result.user.role,
+      }
+      const existingLogs = JSON.parse(localStorage.getItem('portalAoptiActivityLogs') || '[]')
+      localStorage.setItem('portalAoptiActivityLogs', JSON.stringify([logEntry, ...existingLogs]))
+
+      return { success: true, user: userWithoutPassword, token: result.token }
+    } catch (error) {
+      const foundUser = users.find(
+        (u) => u.username === username && u.password === password
+      )
+      if (!foundUser) {
+        return { success: false, error: 'Username atau password salah' }
+      }
+
       const userWithoutPassword = {
         id: foundUser.id,
         username: foundUser.username,
@@ -90,8 +146,9 @@ function UserProvider({ children }) {
       }
       setUser(userWithoutPassword)
       localStorage.setItem('portalAoptiCurrentUser', JSON.stringify(userWithoutPassword))
+      localStorage.setItem('spiHubToken', 'logged-in')
+      localStorage.setItem('spiHubUserName', userWithoutPassword.name)
 
-      // Log login activity
       const logEntry = {
         id: `log-${Date.now()}`,
         userId: foundUser.id,
@@ -108,7 +165,6 @@ function UserProvider({ children }) {
 
       return { success: true, user: userWithoutPassword }
     }
-    return { success: false, error: 'Username atau password salah' }
   }, [users])
 
   const logout = useCallback(() => {

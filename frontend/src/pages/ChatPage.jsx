@@ -462,7 +462,7 @@ function ChatPage() {
                 <p>{activeChat.type === 'group' ? `${activeChat.participants?.length || 0} anggota` : 'Online'}</p>
               </div>
               <div className="header-actions">
-                {activeChat.type === 'group' && (
+                {activeChat.type === 'group' && !activeChat.isDefault && (
                   <button className="action-btn" onClick={() => setShowInvite(!showInvite)} title="Undang Anggota">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -483,7 +483,7 @@ function ChatPage() {
             </div>
 
             {/* Invite Panel */}
-            {showInvite && activeChat.type === 'group' && (
+            {showInvite && activeChat.type === 'group' && !activeChat.isDefault && (
               <div className="invite-panel">
                 <div className="invite-header">
                   <h4>Undang Anggota</h4>

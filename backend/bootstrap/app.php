@@ -18,6 +18,17 @@ spl_autoload_register(function (string $class): void {
     }
 });
 
+// Force load core classes first
+require_once __DIR__ . '/../src/Core/Router.php';
+require_once __DIR__ . '/../src/Core/Request.php';
+require_once __DIR__ . '/../src/Core/Response.php';
+
+// Pre-load all controllers
+$controllerDir = __DIR__ . '/../src/Controllers/';
+foreach (glob($controllerDir . '*.php') as $file) {
+    require_once $file;
+}
+
 $cors = require __DIR__ . '/../config/cors.php';
 
 if ($cors['allow_all']) {
