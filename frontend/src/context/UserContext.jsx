@@ -10,9 +10,27 @@ import {
 } from '../services/spiHubApi'
 
 function extractApiError(error, fallback) {
-  return (
+  const message =
     error?.response?.data?.message ||
-    error?.response?.data?.error ||
+    error?.response?.data?.error
+
+  if (message) {
+    return message
+  }
+
+  if (error?.code === 'ERR_NETWORK' || error?.message === 'Network Error') {
+    const baseUrl = error?.config?.baseURL || ''
+    if (baseUrl.includes('localhost')) {
+      return 'Koneksi API masih mengarah ke localhost. Set VITE_API_BASE_URL ke URL backend production.'
+    }
+    return 'Tidak bisa terhubung ke server API. Periksa URL backend Railway dan status deploy.'
+  }
+
+  if (error?.response?.status === 404) {
+    return 'Endpoint API tidak ditemukan. Pastikan backend Railway aktif dan path /api tersedia.'
+  }
+
+  return (
     error?.message ||
     fallback
   )

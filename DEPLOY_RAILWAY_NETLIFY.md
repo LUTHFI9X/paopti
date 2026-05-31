@@ -2,14 +2,23 @@
 
 ## 1. Deploy backend ke Railway
 
-Project ini sudah disiapkan dengan `Dockerfile` di root.
-Railway akan menjalankan backend PHP dari folder `backend/` dan bind ke `PORT` otomatis.
+Project ini sudah disiapkan dengan konfigurasi Railway di dua lokasi:
+
+- `railway.toml` + `Dockerfile` di root repo
+- `backend/railway.toml` + `backend/Dockerfile` jika root directory service diatur ke `backend`
+
+Railway harus menjalankan backend PHP (bukan static hosting), dan bind ke `PORT` otomatis.
 
 Langkah:
 
 1. Buka Railway, buat project baru.
 2. Pilih `Deploy from GitHub repo` dan pilih repo ini.
-3. Pastikan service memakai `Dockerfile` dari root.
+3. Di service backend Railway, pastikan:
+
+- Root Directory = `/backend` (disarankan), atau `/` jika memakai Dockerfile root.
+- Config-as-code file = `/backend/railway.toml` (atau `/railway.toml` jika root `/`).
+- Build method = Dockerfile (bukan static/railpack default).
+
 4. Setelah service terbentuk, tambahkan environment variables berikut:
 
 - `APP_ENV=production`
@@ -47,6 +56,12 @@ Backend:
 `https://your-service.up.railway.app/api/health`
 
 harus mengembalikan JSON sukses.
+
+Jika masih 404, cek Deployment Details di Railway dan pastikan:
+
+- Build source berasal dari file `railway.toml`
+- Build pakai Dockerfile
+- Health check path ` /api/health `
 
 Frontend:
 

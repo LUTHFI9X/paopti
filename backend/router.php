@@ -4,6 +4,7 @@
 
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
 $publicDir = __DIR__ . '/public';
+$publicRoot = realpath($publicDir) ?: $publicDir;
 
 // Remove query string from URI
 $uri = parse_url($uri, PHP_URL_PATH);
@@ -39,12 +40,27 @@ if (str_starts_with($uri, '/api')) {
     exit;
 }
 
-// Serve static files from public directory
-$file = $publicDir . $uri;
+// Serve static files from public directory.
+// Use realpath validation so requests cannot escape /public via path traversal.
+$file = realpath($publicDir . $uri);
 
-// Check for actual files (not directories)
-if ($uri !== '/' && file_exists($file) && is_file($file)) {
-    $ext = pathinfo($file, PATHINFO_EXTENSION);
+// Check for actual files (not directories) under /public only.
+if (
+    $uri !== '/'
+    && $file !== false
+    && is_file($file)
+    && str_starts_with($file, $publicRoot . DIRECTORY_SEPARATOR)
+) {
+    $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+
+    // Never expose PHP source code as static files.
+    if ($ext === 'php') {
+        http_response_code(404);
+        header('Content-Type: text/plain');
+        echo 'Not Found';
+        exit;
+    }
+
     $mimeTypes = [
         'html' => 'text/html',
         'js' => 'application/javascript',
@@ -60,7 +76,14 @@ if ($uri !== '/' && file_exists($file) && is_file($file)) {
         'ttf' => 'font/ttf',
     ];
 
-    $mime = $mimeTypes[$ext] ?? 'application/octet-stream';
+    if (!array_key_exists($ext, $mimeTypes)) {
+        http_response_code(404);
+        header('Content-Type: text/plain');
+        echo 'Not Found';
+        exit;
+    }
+
+    $mime = $mimeTypes[$ext];
     header('Content-Type: ' . $mime);
     header('Cache-Control: public, max-age=3600');
     readfile($file);
