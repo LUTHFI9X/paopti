@@ -11,7 +11,7 @@
 		{
 			"label": "Run SPI-Hub Backend",
 			"type": "shell",
-			"command": "cd backend && php -S localhost:8000 -t public",
+			"command": "cd backend && php -S localhost:8000 router.php",
 			"isBackground": true,
 			"group": "build"
 		}

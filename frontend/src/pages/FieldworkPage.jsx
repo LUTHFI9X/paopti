@@ -125,6 +125,7 @@ function migrateYearScopedData(rawPrograms, rawTasks) {
 function FieldworkPage() {
   const { user, hasPermission } = useUser()
   const canEdit = hasPermission('canEditFieldwork')
+  // eslint-disable-next-line no-unused-vars
   const canDelete = hasPermission('canDeleteFieldwork')
   const isKSPI = user?.role === ROLES.KSPI
 
@@ -151,6 +152,7 @@ function FieldworkPage() {
       const rawPrograms = JSON.parse(savedPrograms)
       const rawTasks = JSON.parse(savedWorkList)
       const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(rawPrograms, rawTasks)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPrograms(migratedPrograms)
       setWorkList(migratedTasks)
     }
@@ -287,6 +289,7 @@ function FieldworkPage() {
   function addNote(taskId) {
     if (!newNote.trim()) return
     const note = {
+      // eslint-disable-next-line react-hooks/purity
       id: `n${Date.now()}`,
       author: 'You',
       time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
@@ -305,6 +308,7 @@ function FieldworkPage() {
     setNewNote('')
   }
 
+  // eslint-disable-next-line no-unused-vars
   function createFieldwork(taskId) {
     return {
       activities: [],

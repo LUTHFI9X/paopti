@@ -160,7 +160,7 @@ DB_PASS=your_password_here
 
 ```bash
 cd backend
-php -S localhost:8000 -t public
+php -S localhost:8000 router.php
 ```
 
 Backend akan running di `http://localhost:8000`

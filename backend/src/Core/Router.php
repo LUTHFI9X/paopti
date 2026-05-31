@@ -60,6 +60,7 @@ final class Router
                     $request->query,
                     $request->body,
                     $request->server,
+                    $request->headers,
                     $params
                 );
                 $this->executeHandler($handler, $request);

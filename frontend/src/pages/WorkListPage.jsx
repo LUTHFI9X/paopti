@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useUser, ROLES } from '../context/UserContext'
+import { useToast } from '../context/ToastContext'
 import {
   createProgram,
   createWorkItem,
   deleteProgram,
   deleteWorkItem,
+  getAuditPlans,
   getPrograms,
   getWorkList,
   updateProgram,
@@ -13,18 +15,22 @@ import {
 } from '../services/spiHubApi'
 
 const PROGRESS_OPTIONS = [
-  { value: 0, label: '0% - Start', color: '#94a3b8', bg: '#f1f5f9' },
-  { value: 50, label: '50% - On Progress', color: '#0c3d86', bg: '#e8efff' },
-  { value: 100, label: '100% - Selesai', color: '#22a95f', bg: '#e6f7ed' },
+  { value: 0, label: '0% - Belum Mulai', color: '#94a3b8', bg: '#f1f5f9' },
+  { value: 25, label: '25% - Entry Meeting', color: '#1667c8', bg: '#edf4ff' },
+  { value: 50, label: '50% - Konfirmasi Audit', color: '#0c3d86', bg: '#e8efff' },
+  { value: 75, label: '75% - Expose', color: '#b15b08', bg: '#fff4e6' },
+  { value: 100, label: '100% - Exit Meeting', color: '#22a95f', bg: '#e6f7ed' },
 ]
 
 const currentYear = new Date().getFullYear()
 
 function normalizeProgress(value) {
   const parsed = Number(value)
-  if (Number.isNaN(parsed)) return 0
+  if (Number.isNaN(parsed) || parsed <= 0) return 0
   if (parsed >= 100) return 100
+  if (parsed >= 75) return 75
   if (parsed >= 50) return 50
+  if (parsed >= 25) return 25
   return 0
 }
 
@@ -32,6 +38,19 @@ function statusFromProgress(progress) {
   if (progress >= 100) return 'completed'
   if (progress > 0) return 'in_progress'
   return 'scheduled'
+}
+
+function progressFromAuditPhase(plan) {
+  if ((plan.tahap_type || plan.tahapType || 'audit') !== 'audit') {
+    return normalizeProgress(plan.progress || plan.custom_percentage || plan.customPercentage || 0)
+  }
+
+  const phaseLabel = String(plan.phase_label || plan.phaseLabel || '').toLowerCase()
+  if (phaseLabel.includes('exit')) return 100
+  if (phaseLabel.includes('expose')) return 75
+  if (phaseLabel.includes('konfirmasi')) return 50
+  if (phaseLabel.includes('entry')) return 25
+  return normalizeProgress(plan.progress || 0)
 }
 
 function normalizeTask(task, fallbackYear = currentYear) {
@@ -168,11 +187,11 @@ function migrateYearScopedData(rawPrograms, rawTasks) {
   return { programs: migratedPrograms, tasks: patchedTasks }
 }
 
-const initialPrograms = []
-const initialWorkList = []
+// initialPrograms and initialWorkList removed — unused
 
 function WorkListPage() {
   const { user, hasPermission } = useUser()
+  const toast = useToast()
   const canEdit = hasPermission('canEditWorkList')
   const canDelete = hasPermission('canDeleteWorkList')
   const isKSPI = user?.role === ROLES.KSPI
@@ -181,11 +200,14 @@ function WorkListPage() {
   const [selectedDecade, setSelectedDecade] = useState(Math.floor(currentYear / 10) * 10)
   const [programs, setPrograms] = useState([])
   const [workList, setWorkList] = useState([])
+  const [auditPlans, setAuditPlans] = useState([])
   const [showProgramForm, setShowProgramForm] = useState(false)
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [editingProgramId, setEditingProgramId] = useState(null)
   const [selectedProgramId, setSelectedProgramId] = useState(null)
+  const [apiError, setApiError] = useState('')
+  const [programPage, setProgramPage] = useState(0)
 
   const [programFormData, setProgramFormData] = useState({ name: '' })
 
@@ -198,10 +220,12 @@ function WorkListPage() {
     pic: '',
     progress: 0,
   })
+  const [detailPage, setDetailPage] = useState(0)
+  const DETAIL_PAGE_SIZE = 7
+  const PROGRAM_PAGE_SIZE = 5
 
   // Generate decades (from 2020 to 2050)
   const decades = useMemo(() => {
-    const currentCentury = Math.floor(currentYear / 100) * 100
     const startDecade = 2020
     return Array.from({ length: 5 }, (_, i) => startDecade + i * 10)
   }, [])
@@ -226,6 +250,9 @@ function WorkListPage() {
   // Handle year change
   function handleYearChange(e) {
     setSelectedYear(Number(e.target.value))
+    setSelectedProgramId(null)
+    setProgramPage(0)
+    setDetailPage(0)
   }
 
   useEffect(() => {
@@ -233,9 +260,10 @@ function WorkListPage() {
 
     async function loadWorkList() {
       try {
-        const [programResponse, workListResponse] = await Promise.all([
+        const [programResponse, workListResponse, auditPlanResponse] = await Promise.all([
           getPrograms(selectedYear),
           getWorkList(selectedYear),
+          getAuditPlans(selectedYear).catch(() => []),
         ])
         if (cancelled) return
 
@@ -245,34 +273,34 @@ function WorkListPage() {
 
         setPrograms(migratedPrograms)
         setWorkList(migratedTasks)
+        setAuditPlans(auditPlanResponse || [])
+        setApiError('')
         localStorage.setItem('portalAoptiPrograms', JSON.stringify(migratedPrograms))
         localStorage.setItem('portalAoptiWorkList', JSON.stringify(migratedTasks))
+        localStorage.setItem('portalAoptiAuditPlans', JSON.stringify(auditPlanResponse || []))
         window.dispatchEvent(new Event('portalPrograms-changed'))
         window.dispatchEvent(new Event('portalWorkList-changed'))
-      } catch (error) {
+      } catch (_error) {
         if (cancelled) return
-
-        const savedPrograms = localStorage.getItem('portalAoptiPrograms')
-        const savedWorkList = localStorage.getItem('portalAoptiWorkList')
-
-        if (savedPrograms && savedWorkList) {
-          const rawPrograms = JSON.parse(savedPrograms)
-          const rawTasks = JSON.parse(savedWorkList)
-          const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(rawPrograms, rawTasks)
-          setPrograms(migratedPrograms)
-          setWorkList(migratedTasks)
-        } else {
-          setPrograms([])
-          setWorkList([])
-        }
-      } finally {
-      }
+        setApiError('Tidak dapat terhubung ke server. Pastikan backend aktif dan database tersedia.')
+        setPrograms([])
+        setWorkList([])
+        setAuditPlans([])
+        localStorage.removeItem('portalAoptiPrograms')
+        localStorage.removeItem('portalAoptiWorkList')
+      } finally { /* cleanup */ }
     }
 
     loadWorkList()
+    const refreshTimer = window.setInterval(loadWorkList, 15000)
+    window.addEventListener('portalAuditPlans-changed', loadWorkList)
+    window.addEventListener('focus', loadWorkList)
 
     return () => {
       cancelled = true
+      window.clearInterval(refreshTimer)
+      window.removeEventListener('portalAuditPlans-changed', loadWorkList)
+      window.removeEventListener('focus', loadWorkList)
     }
   }, [selectedYear])
 
@@ -302,21 +330,70 @@ function WorkListPage() {
     const scheduled = filteredWorkList.filter((i) => i.status === 'scheduled').length
     const inProgress = filteredWorkList.filter((i) => i.status === 'in_progress').length
     const completed = filteredWorkList.filter((i) => i.status === 'completed').length
-    const avgProgress = total > 0
-      ? Math.round(filteredWorkList.reduce((sum, t) => sum + normalizeProgress(t.progress), 0) / total)
+    const programProgressValues = yearPrograms.map((program) => {
+      const group = groupedWorkList[program.id] || { tasks: [] }
+      return group.tasks.length
+        ? Math.round(group.tasks.reduce((sum, task) => sum + normalizeProgress(task.progress), 0) / group.tasks.length)
+        : 0
+    })
+    const avgProgress = programProgressValues.length > 0
+      ? Math.round(programProgressValues.reduce((sum, progress) => sum + progress, 0) / programProgressValues.length)
       : 0
     return { total, scheduled, inProgress, completed, avgProgress }
-  }, [filteredWorkList])
+  }, [filteredWorkList, groupedWorkList, yearPrograms])
 
-  const selectedGroup = selectedProgramId ? groupedWorkList[selectedProgramId] : null
+  const auditProgressByTask = useMemo(() => {
+    const progressMap = new Map()
+    auditPlans.forEach((plan) => {
+      const taskId = String(plan.task_id || plan.taskId || '')
+      if (!taskId) return
+      const nextProgress = progressFromAuditPhase(plan)
+      const currentProgress = progressMap.get(taskId) || 0
+      progressMap.set(taskId, Math.max(currentProgress, nextProgress))
+    })
+    return progressMap
+  }, [auditPlans])
+
+  const pipelineTasks = useMemo(() => {
+    return filteredWorkList.map((task) => {
+      const candidateIds = [task.id, task.taskId].filter(Boolean).map(String)
+      const auditProgress = candidateIds.reduce((maxProgress, id) => {
+        return Math.max(maxProgress, auditProgressByTask.get(id) || 0)
+      }, 0)
+      const pipelineProgress = Math.max(normalizeProgress(task.progress), auditProgress)
+
+      return {
+        ...task,
+        pipelineProgress,
+        pipelineStatus: statusFromProgress(pipelineProgress),
+      }
+    })
+  }, [auditProgressByTask, filteredWorkList])
+
+  const auditPipelineColumns = useMemo(() => {
+    return PROGRESS_OPTIONS.map((option) => ({
+      ...option,
+      title: option.label.split(' - ')[1] || option.label,
+      tasks: pipelineTasks.filter((task) => task.pipelineProgress === option.value),
+    }))
+  }, [pipelineTasks])
+
+  const selectedProgramFallback = selectedProgramId
+    ? yearPrograms.find((program) => program.id === selectedProgramId)
+    : null
+  const selectedGroup = selectedProgramId
+    ? (groupedWorkList[selectedProgramId] || (selectedProgramFallback ? { program: selectedProgramFallback, tasks: [] } : null))
+    : null
   const selectedProgram = selectedGroup?.program || null
 
+  // eslint-disable-next-line no-unused-vars
   function getProgramProgress(group) {
     if (group.tasks.length === 0) return 0
     const total = group.tasks.reduce((sum, t) => sum + normalizeProgress(t.progress), 0)
     return Math.round(total / group.tasks.length)
   }
 
+  // eslint-disable-next-line no-unused-vars
   function getProgramStats(group) {
     const completed = group.tasks.filter(t => t.status === 'completed').length
     const inProgress = group.tasks.filter(t => t.status === 'in_progress').length
@@ -324,6 +401,7 @@ function WorkListPage() {
     return { completed, inProgress, scheduled, total: group.tasks.length }
   }
 
+  // eslint-disable-next-line no-unused-vars
   function getStatusInfo(status) {
     const map = {
       scheduled: { label: 'Terjadwal', color: '#6f7a94', bg: '#f4f6ff' },
@@ -333,6 +411,7 @@ function WorkListPage() {
     return map[status] || map.scheduled
   }
 
+  // eslint-disable-next-line no-unused-vars
   function formatDate(dateStr) {
     if (!dateStr) return '-'
     const date = new Date(dateStr)
@@ -349,15 +428,16 @@ function WorkListPage() {
   function handleProgramSubmit(e) {
     e.preventDefault()
     if (!programFormData.name.trim()) {
-      alert('Nama Program Kerja wajib diisi')
+      toast.warning('Nama Program Kerja wajib diisi')
       return
     }
 
     const submitProgram = async () => {
+      const createdName = programFormData.name.trim()
       if (editingProgramId) {
-        await updateProgram(editingProgramId, { name: programFormData.name.trim(), year: selectedYear })
+        await updateProgram(editingProgramId, { name: createdName, year: selectedYear })
       } else {
-        await createProgram({ name: programFormData.name.trim(), year: selectedYear })
+        await createProgram({ name: createdName, year: selectedYear })
       }
 
       setProgramFormData({ name: '' })
@@ -376,7 +456,13 @@ function WorkListPage() {
       window.dispatchEvent(new Event('portalWorkList-changed'))
     }
 
-    submitProgram().catch(() => alert('Gagal menyimpan program kerja'))
+    submitProgram().catch((error) => {
+      const message = error?.response?.data?.message
+        || (error?.code === 'ERR_NETWORK'
+          ? 'Backend belum aktif. Jalankan server backend lalu coba lagi.'
+          : 'Gagal menyimpan program kerja')
+      toast.error(message, { title: 'Gagal' })
+    })
   }
 
   function handleEditProgram(program) {
@@ -388,10 +474,16 @@ function WorkListPage() {
   function handleDeleteProgram(programId) {
     const programTasks = workList.filter((item) => item.programId === programId)
     if (programTasks.length > 0) {
-      alert(`Tidak bisa hapus! Program ini masih memiliki ${programTasks.length} tugas. Hapus tugas terlebih dahulu.`)
+      toast.warning(`Tidak bisa hapus! Program ini masih memiliki ${programTasks.length} tugas. Hapus tugas terlebih dahulu.`)
       return
     }
-    if (confirm('Hapus Program Kerja ini?')) {
+    toast.confirm({
+      title: 'Hapus Program Kerja',
+      message: 'Program kerja akan dihapus permanen. Lanjutkan?',
+      confirmLabel: 'Hapus',
+      tone: 'danger',
+    }).then((ok) => {
+      if (!ok) return
       deleteProgram(programId)
         .then(() => Promise.all([getPrograms(selectedYear), getWorkList(selectedYear)]))
         .then(([programResponse, workListResponse]) => {
@@ -405,9 +497,10 @@ function WorkListPage() {
           if (selectedProgramId === programId) {
             setSelectedProgramId(null)
           }
+          toast.success('Program kerja berhasil dihapus')
         })
-        .catch(() => alert('Gagal menghapus program kerja'))
-    }
+        .catch(() => toast.error('Gagal menghapus program kerja'))
+    })
   }
 
   function resetProgramForm() {
@@ -420,11 +513,11 @@ function WorkListPage() {
   function handleTaskSubmit(e) {
     e.preventDefault()
     if (!taskFormData.programId || !taskFormData.taskName.trim()) {
-      alert('Pilih Program Kerja dan isi Nama Tugas')
+      toast.warning('Pilih Program Kerja dan isi Nama Tugas')
       return
     }
     if (!taskFormData.pic.trim()) {
-      alert('PIC (Penanggung Jawab) wajib diisi')
+      toast.warning('PIC (Penanggung Jawab) wajib diisi')
       return
     }
 
@@ -448,6 +541,8 @@ function WorkListPage() {
     }
 
     const submitTask = async () => {
+      // eslint-disable-next-line no-unused-vars
+      const createdTaskName = newItem.taskName
       if (editingId) {
         await updateWorkItem(editingId, buildTaskPayload(newItem))
       } else {
@@ -468,7 +563,7 @@ function WorkListPage() {
       window.dispatchEvent(new Event('portalWorkList-changed'))
     }
 
-    submitTask().catch(() => alert('Gagal menyimpan tugas'))
+    submitTask().catch(() => toast.error('Gagal menyimpan tugas'))
   }
 
   function handleEditTask(item) {
@@ -486,7 +581,13 @@ function WorkListPage() {
   }
 
   function handleDeleteTask(id) {
-    if (confirm('Hapus tugas ini?')) {
+    toast.confirm({
+      title: 'Hapus Tugas',
+      message: 'Tugas ini akan dihapus permanen. Lanjutkan?',
+      confirmLabel: 'Hapus',
+      tone: 'danger',
+    }).then((ok) => {
+      if (!ok) return
       deleteWorkItem(id)
         .then(() => Promise.all([getPrograms(selectedYear), getWorkList(selectedYear)]))
         .then(([programResponse, workListResponse]) => {
@@ -497,11 +598,13 @@ function WorkListPage() {
           localStorage.setItem('portalAoptiWorkList', JSON.stringify(migratedTasks))
           window.dispatchEvent(new Event('portalPrograms-changed'))
           window.dispatchEvent(new Event('portalWorkList-changed'))
+          toast.success('Tugas berhasil dihapus')
         })
-        .catch(() => alert('Gagal menghapus tugas'))
-    }
+        .catch(() => toast.error('Gagal menghapus tugas'))
+    })
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleProgressChange(id, newProgress) {
     const progress = normalizeProgress(newProgress)
     updateWorkItemProgress(id, { progress })
@@ -515,7 +618,7 @@ function WorkListPage() {
         window.dispatchEvent(new Event('portalPrograms-changed'))
         window.dispatchEvent(new Event('portalWorkList-changed'))
       })
-      .catch(() => alert('Gagal mengupdate progress'))
+      .catch(() => toast.error('Gagal mengupdate progress'))
   }
 
   function resetTaskForm() {
@@ -534,18 +637,30 @@ function WorkListPage() {
 
   function handleSelectProgram(programId) {
     setSelectedProgramId(programId)
+    setDetailPage(0)
     setTaskFormData((prev) => ({ ...prev, programId }))
   }
 
   const availablePrograms = programs.filter(p => p.year === selectedYear)
+  const totalProgramPages = Math.max(1, Math.ceil(yearPrograms.length / PROGRAM_PAGE_SIZE))
+  const normalizedProgramPage = Math.min(programPage, totalProgramPages - 1)
+  const pagedYearPrograms = yearPrograms.slice(
+    normalizedProgramPage * PROGRAM_PAGE_SIZE,
+    (normalizedProgramPage + 1) * PROGRAM_PAGE_SIZE
+  )
 
   return (
     <div className="wl-container">
       {/* Header Section */}
       <div className="wl-header">
         <div className="wl-header-left">
-          <h1>Program Kerja Audit</h1>
+          <h2>Program Kerja Audit</h2>
           <p>Kelola program kerja dan jadwal kegiatan audit tahunan</p>
+          {apiError && (
+            <div className="wl-api-alert">
+              {apiError}
+            </div>
+          )}
         </div>
         <div className="wl-header-actions">
           {canEdit && (
@@ -694,6 +809,52 @@ function WorkListPage() {
           </div>
         </div>
       </div>
+
+      <section className="wl-pipeline-section">
+        <div className="wl-pipeline-header">
+          <div>
+            <h3>Pipeline Audit</h3>
+            <p>Alur pekerjaan berdasarkan tahap progress audit</p>
+          </div>
+          <span>{filteredWorkList.length} tugas</span>
+        </div>
+        {filteredWorkList.length === 0 ? (
+          <div className="empty-state-pro empty-state-pro--compact">
+            <div className="empty-state-pro__icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" />
+                <path d="M9 12l2 2 4-4" />
+              </svg>
+            </div>
+            <div>
+              <strong>Pipeline belum memiliki tugas</strong>
+              <span>Tambahkan program dan tugas audit untuk mulai memantau alurnya.</span>
+            </div>
+          </div>
+        ) : (
+          <div className="wl-pipeline-board">
+            {auditPipelineColumns.map((column) => (
+              <div key={column.value} className="wl-pipeline-column" style={{ '--stage-color': column.color, '--stage-bg': column.bg }}>
+                <div className="wl-pipeline-column-head">
+                  <span>{column.title}</span>
+                  <strong>{column.tasks.length}</strong>
+                </div>
+                <div className="wl-pipeline-items">
+                  {column.tasks.slice(0, 5).map((task) => (
+                    <button key={task.id} type="button" className="wl-pipeline-card" onClick={() => handleSelectProgram(task.programId)}>
+                      <strong>{task.taskName}</strong>
+                      <span>{task.programName}</span>
+                      <small>{task.pipelineProgress}% • {formatDateShort(task.startDate)}{task.pic ? ` • ${task.pic}` : ''}</small>
+                    </button>
+                  ))}
+                  {column.tasks.length === 0 && <div className="wl-pipeline-empty">Kosong</div>}
+                  {column.tasks.length > 5 && <div className="wl-pipeline-more">+{column.tasks.length - 5} tugas lainnya</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Forms Section */}
       <div className="wl-forms-container">
@@ -860,27 +1021,6 @@ function WorkListPage() {
                   required
                 />
               </div>
-              <div className="wl-form-group wl-form-group-full">
-                <label>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-                  </svg>
-                  Progress
-                </label>
-                <div className="wl-progress-options">
-                  {PROGRESS_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      className={`wl-progress-option ${taskFormData.progress === opt.value ? 'active' : ''}`}
-                      style={{ '--opt-color': opt.color, '--opt-bg': opt.bg }}
-                      onClick={() => setTaskFormData((prev) => ({ ...prev, progress: opt.value }))}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
               <div className="wl-form-actions">
                 <button type="button" className="wl-btn wl-btn-secondary" onClick={resetTaskForm}>
                   Batal
@@ -901,180 +1041,227 @@ function WorkListPage() {
 
       {/* Tables Section */}
       <div className="wl-tables-container">
-        {/* Table 1: Program Kerja */}
-        <div className="wl-table-section">
-          <div className="wl-table-header">
-            <h3>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-              </svg>
-              Daftar Program Kerja
-            </h3>
-            <span className="wl-table-count">{yearPrograms.length} program</span>
-          </div>
-          <div className="wl-table-wrapper">
-            <table className="wl-table wl-program-table">
-              <thead>
-                <tr>
-                  <th style={{ width: '50px' }}>#</th>
-                  <th>Nama Program Kerja</th>
-                  <th style={{ width: '100px' }}>Jumlah Tugas</th>
-                  <th style={{ width: '150px' }}>Progress</th>
-                  <th style={{ width: '120px' }}>Aksi</th>
-                </tr>
-              </thead>
-              <tbody>
-                {yearPrograms.length === 0 ? (
+        {!selectedProgram ? (
+          /* ── Program list view ── */
+          <div className="wl-table-section">
+            <div className="wl-table-header">
+              <h3>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+                Daftar Program Kerja
+              </h3>
+              <span className="wl-table-count">{yearPrograms.length} program</span>
+            </div>
+            <div className="wl-table-wrapper">
+              <table className="wl-table wl-program-table">
+                <thead>
                   <tr>
-                    <td colSpan="5" className="wl-table-empty">
-                      <div className="wl-empty-state">
-                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                        </svg>
-                        <p>Belum ada program kerja</p>
-                        <button className="wl-btn wl-btn-primary wl-btn-sm" onClick={() => setShowProgramForm(true)}>
-                          Tambah Program
-                        </button>
-                      </div>
-                    </td>
+                    <th style={{ width: 40 }}>#</th>
+                    <th>Nama Program Kerja</th>
+                    <th style={{ width: 110 }}>Jumlah Tugas</th>
+                    <th style={{ width: 160 }}>Progress</th>
+                    <th style={{ width: 100 }}>Aksi</th>
                   </tr>
-                ) : (
-                  yearPrograms.map((program, index) => {
+                </thead>
+                <tbody>
+                  {yearPrograms.length === 0 ? (
+                    <tr>
+                      <td colSpan="5">
+                        <div className="wl-empty-state">
+                          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                          </svg>
+                          <p>Belum ada program kerja</p>
+                          {canEdit && (
+                            <button className="wl-btn wl-btn-primary wl-btn-sm" onClick={() => setShowProgramForm(true)}>Tambah Program</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : pagedYearPrograms.map((program, index) => {
                     const group = groupedWorkList[program.id] || { tasks: [] }
                     const tasksCount = group.tasks.length
                     const progress = tasksCount > 0
-                      ? Math.round(group.tasks.reduce((sum, t) => sum + normalizeProgress(t.progress), 0) / tasksCount)
+                      ? Math.round(group.tasks.reduce((s, t) => s + normalizeProgress(t.progress), 0) / tasksCount)
                       : 0
-                    const isSelected = selectedProgramId === program.id
-                    const completed = group.tasks.filter(t => t.status === 'completed').length
-                    const inProgress = group.tasks.filter(t => t.status === 'in_progress').length
-
                     return (
                       <tr
                         key={program.id}
-                        className={`wl-program-row ${isSelected ? 'selected' : ''}`}
+                        className={`wl-program-row ${selectedProgramId === program.id ? 'selected' : ''}`}
                         onClick={() => handleSelectProgram(program.id)}
+                        title="Klik untuk lihat tugas"
                       >
-                        <td className="wl-row-number">{index + 1}</td>
+                        <td className="wl-row-number">{normalizedProgramPage * PROGRAM_PAGE_SIZE + index + 1}</td>
                         <td className="wl-program-name">
                           <div className="wl-program-name-content">
                             <span className="wl-program-name-text">{program.name}</span>
                             {tasksCount > 0 && (
                               <span className="wl-program-substats">
-                                <span className="wl-substat completed">{completed} selesai</span>
-                                <span className="wl-substat in-progress">{inProgress} berlangsung</span>
+                                <span className="wl-substat completed">{group.tasks.filter(t=>t.status==='completed').length} selesai</span>
+                                <span className="wl-substat in-progress">{group.tasks.filter(t=>t.status==='in_progress').length} berlangsung</span>
                               </span>
                             )}
                           </div>
                         </td>
                         <td className="wl-tasks-count">
-                          <span className={`wl-count-badge ${tasksCount === 0 ? 'empty' : ''}`}>
-                            {tasksCount} tugas
-                          </span>
+                          <span className={`wl-count-badge ${tasksCount === 0 ? 'empty' : ''}`}>{tasksCount} tugas</span>
                         </td>
                         <td className="wl-program-progress">
                           <div className="wl-progress-bar-wrapper">
                             <div className="wl-progress-bar">
-                              <div className="wl-progress-bar-fill" style={{ width: `${progress}%` }}></div>
+                              <div className="wl-progress-bar-fill" style={{ width: `${progress}%` }} />
                             </div>
                             <span className="wl-progress-value">{progress}%</span>
                           </div>
                         </td>
-                        <td className="wl-actions">
+                        <td className="wl-actions" onClick={e => e.stopPropagation()}>
                           {canEdit && (
-                            <>
-                              <button
-                                className="wl-action-btn wl-action-edit"
-                                onClick={(e) => { e.stopPropagation(); handleEditProgram(program) }}
-                                title="Edit"
-                              >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-                                  <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
-                                </svg>
-                              </button>
-                              {canDelete && (
-                                <button
-                                  className="wl-action-btn wl-action-delete"
-                                  onClick={(e) => { e.stopPropagation(); handleDeleteProgram(program.id) }}
-                                  title="Hapus"
-                                >
-                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                    <polyline points="3 6 5 6 21 6" />
-                                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-                                  </svg>
-                                </button>
-                              )}
-                            </>
+                            <button className="wl-action-btn wl-action-edit" onClick={() => handleEditProgram(program)} title="Edit">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+                                <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                              </svg>
+                            </button>
+                          )}
+                          {canEdit && canDelete && (
+                            <button className="wl-action-btn wl-action-delete" onClick={() => handleDeleteProgram(program.id)} title="Hapus">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                              </svg>
+                            </button>
                           )}
                         </td>
                       </tr>
                     )
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {selectedProgram && (
-          <div className="wl-table-section wl-program-detail-panel active">
-            <div className="wl-table-header">
-              <h3>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M9 11l3 3L22 4" />
-                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-                </svg>
-                {selectedProgram.name}
-              </h3>
-              <span className="wl-table-count">{selectedGroup?.tasks.length || 0} tugas</span>
+                  })}
+                </tbody>
+              </table>
             </div>
-            <div className="wl-program-detail-list">
-              {selectedGroup?.tasks.length > 0 ? (
-                selectedGroup.tasks.map((task, index) => {
-                  const statusInfo = getStatusInfo(task.status)
+            {yearPrograms.length > PROGRAM_PAGE_SIZE && (
+              <div className="wl-program-pagination">
+                <button
+                  type="button"
+                  className="wl-detail-page-btn"
+                  disabled={normalizedProgramPage === 0}
+                  onClick={() => setProgramPage((page) => Math.max(0, page - 1))}
+                >
+                  ‹ Prev
+                </button>
+                <span className="wl-detail-page-info">{normalizedProgramPage + 1} / {totalProgramPages}</span>
+                <button
+                  type="button"
+                  className="wl-detail-page-btn"
+                  disabled={normalizedProgramPage >= totalProgramPages - 1}
+                  onClick={() => setProgramPage((page) => Math.min(totalProgramPages - 1, page + 1))}
+                >
+                  Next ›
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* ── Task detail view ── */
+          (() => {
+            const tasksForDetail = selectedGroup?.tasks || []
+            const totalDetailPages = Math.max(1, Math.ceil(tasksForDetail.length / DETAIL_PAGE_SIZE))
+            const pagedTasks = tasksForDetail.slice(detailPage * DETAIL_PAGE_SIZE, (detailPage + 1) * DETAIL_PAGE_SIZE)
+            return (
+              <div className="wl-table-section wl-program-detail-panel">
+                {/* Header with back button */}
+                <div className="wl-table-header">
+                  <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                    <button className="wl-back-btn" onClick={() => setSelectedProgramId(null)}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <polyline points="15 18 9 12 15 6" />
+                      </svg>
+                      Kembali
+                    </button>
+                    <h3 style={{ margin:0 }}>{selectedProgram.name}</h3>
+                  </div>
+                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    <span className="wl-table-count">{tasksForDetail.length} tugas</span>
+                    {canEdit && (
+                      <button className="wl-btn wl-btn-primary wl-btn-sm" onClick={() => { setShowTaskForm(true); setTaskFormData(p => ({ ...p, programId: selectedProgramId })) }}>
+                        + Tugas
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Pagination header (only when > page size) */}
+                {tasksForDetail.length > DETAIL_PAGE_SIZE && (
+                  <div className="wl-detail-pagination">
+                    <button className="wl-detail-page-btn" disabled={detailPage===0} onClick={() => setDetailPage(p => p-1)}>‹ Prev</button>
+                    <span className="wl-detail-page-info">{detailPage+1} / {totalDetailPages}</span>
+                    <button className="wl-detail-page-btn" disabled={detailPage>=totalDetailPages-1} onClick={() => setDetailPage(p => p+1)}>Next ›</button>
+                  </div>
+                )}
+
+                {/* Task rows */}
+                {tasksForDetail.length === 0 ? (
+                  <div className="wl-table-empty-state">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                    </svg>
+                    <p>Belum ada tugas dalam program ini</p>
+                    {canEdit && (
+                      <button className="wl-btn wl-btn-primary wl-btn-sm" onClick={() => { setShowTaskForm(true); setTaskFormData(p => ({ ...p, programId: selectedProgramId })) }}>
+                        Tambah Tugas
+                      </button>
+                    )}
+                  </div>
+                ) : pagedTasks.map((task, i) => {
+                  const pageOffset = detailPage * DETAIL_PAGE_SIZE
+                  const statusKey = task.status || 'scheduled'
+                  const statusLabels = { scheduled:'Terjadwal', in_progress:'Berlangsung', completed:'Selesai' }
                   return (
-                    <div key={task.id} className={`wl-program-detail-item ${task.status === 'completed' ? 'completed' : ''}`}>
-                      <div className="wl-program-detail-index">{index + 1}</div>
-                      <div className="wl-program-detail-main">
-                        <div className="wl-task-name-content">
-                          <span className="wl-task-name-text">{task.taskName}</span>
+                    <div key={task.id} className={`wl-task-row ${statusKey === 'completed' ? 'completed' : ''}`}>
+                      <div className="wl-task-num">{pageOffset + i + 1}</div>
+                      <div className="wl-task-body">
+                        <div className="wl-task-title">{task.taskName}</div>
+                        <div className="wl-task-meta">
+                          {task.pic && (
+                            <span className="wl-task-meta-item">
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+                              {task.pic}
+                            </span>
+                          )}
+                          {task.startDate && (
+                            <span className="wl-task-meta-item">
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                              {formatDateShort(task.startDate)} – {formatDateShort(task.endDate)}
+                            </span>
+                          )}
                           {task.location && (
-                            <span className="wl-task-location">
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-                                <circle cx="12" cy="10" r="3" />
-                              </svg>
+                            <span className="wl-task-meta-item">
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
                               {task.location}
                             </span>
                           )}
+                          <span className={`wl-status-badge wl-status-${statusKey}`}>{statusLabels[statusKey]}</span>
                         </div>
-                        <div className="wl-task-meta-grid">
-                          <span><strong>PIC:</strong> {task.pic || '-'}</span>
-                          <span><strong>Mulai:</strong> {formatDateShort(task.startDate)}</span>
-                          <span><strong>Selesai:</strong> {formatDateShort(task.endDate)}</span>
-                          <span><strong>Status:</strong> {statusInfo.label}</span>
-                        </div>
-                        <div className="wl-progress-bar-wrapper">
-                          <div className="wl-progress-bar">
-                            <div className="wl-progress-bar-fill" style={{ width: `${task.progress}%` }}></div>
+                        <div className="wl-task-progress-row">
+                          <div className="wl-task-progress-bar">
+                            <div className="wl-task-progress-fill" style={{ width:`${task.progress}%` }} />
                           </div>
-                          <span className="wl-progress-value">{task.progress}%</span>
+                          <span className="wl-task-progress-label">{task.progress}%</span>
                         </div>
                       </div>
                       {canEdit && (
-                        <div className="wl-program-detail-actions">
+                        <div className="wl-task-actions">
                           <button className="wl-action-btn wl-action-edit" onClick={() => handleEditTask(task)} title="Edit">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
-                              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
                             </svg>
                           </button>
                           {canDelete && (
                             <button className="wl-action-btn wl-action-delete" onClick={() => handleDeleteTask(task.id)} title="Hapus">
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <polyline points="3 6 5 6 21 6" />
-                                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <polyline points="3 6 5 6 21 6"/>
+                                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
                               </svg>
                             </button>
                           )}
@@ -1082,23 +1269,10 @@ function WorkListPage() {
                       )}
                     </div>
                   )
-                })
-              ) : (
-                <div className="wl-table-empty-state">
-                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M9 11l3 3L22 4" />
-                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-                  </svg>
-                  <p>Belum ada tugas dalam program ini</p>
-                  {canEdit && (
-                    <button className="wl-btn wl-btn-primary wl-btn-sm" onClick={() => { setShowTaskForm(true); setTaskFormData((prev) => ({ ...prev, programId: selectedProgramId })) }}>
-                      Tambah Tugas
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
+                })}
+              </div>
+            )
+          })()
         )}
       </div>
     </div>

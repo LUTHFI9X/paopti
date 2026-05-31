@@ -133,3 +133,8 @@ export async function login(username, password) {
   const { data } = await apiClient.post('/auth/login', { username, password })
   return data.data
 }
+
+export async function changePassword(payload) {
+  const { data } = await apiClient.post('/auth/change-password', payload)
+  return data
+}

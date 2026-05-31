@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
     department VARCHAR(255) DEFAULT '',
     phone VARCHAR(50) DEFAULT '',
     status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+    must_change_password TINYINT(1) NOT NULL DEFAULT 0,
+    password_changed_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -39,7 +41,7 @@ CREATE TABLE IF NOT EXISTS worklist (
     end_date DATE,
     location VARCHAR(255) DEFAULT '',
     pic VARCHAR(255) DEFAULT '',
-    progress INT DEFAULT 0 CHECK (progress IN (0, 50, 100)),
+    progress INT DEFAULT 0 CHECK (progress IN (0, 25, 50, 75, 100)),
     status ENUM('scheduled', 'in_progress', 'completed') DEFAULT 'scheduled',
     year INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

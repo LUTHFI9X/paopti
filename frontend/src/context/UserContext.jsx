@@ -1,5 +1,22 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import { getUsers, login as apiLogin } from '../services/spiHubApi'
+import {
+  getUsers,
+  login as apiLogin,
+  createUser as apiCreateUser,
+  updateUser as apiUpdateUser,
+  deleteUser as apiDeleteUser,
+  resetUserPassword as apiResetUserPassword,
+  changePassword as apiChangePassword,
+} from '../services/spiHubApi'
+
+function extractApiError(error, fallback) {
+  return (
+    error?.response?.data?.message ||
+    error?.response?.data?.error ||
+    error?.message ||
+    fallback
+  )
+}
 
 const UserContext = createContext(null)
 
@@ -51,20 +68,29 @@ const ROLE_PERMISSIONS = {
   },
 }
 
-const initialUsers = [
-  { id: 'u1', username: 'admin', password: 'admin123', name: 'Administrator', role: ROLES.ADMIN, email: 'admin@aopti.go.id', department: 'Pengawasan Intern', phone: '021-1234567', status: 'active', createdAt: '2024-01-01T00:00:00.000Z' },
-  { id: 'u2', username: 'auditor', password: 'auditor123', name: 'Ahmad Auditor', role: ROLES.AUDITOR, email: 'ahmad.auditor@aopti.go.id', department: 'Tim Audit 1', phone: '021-2345678', status: 'active', createdAt: '2024-01-15T00:00:00.000Z' },
-  { id: 'u3', username: 'kspi', password: 'kspi123', name: 'Budi KSPI', role: ROLES.KSPI, email: 'budi.kspi@aopti.go.id', department: 'KSPI', phone: '021-3456789', status: 'active', createdAt: '2024-02-01T00:00:00.000Z' },
-]
-
 function UserProvider({ children }) {
   const [user, setUser] = useState(null)
-  const [users, setUsers] = useState(initialUsers)
+  const [users, setUsers] = useState([])
   const [isLoading, setIsLoading] = useState(true)
+
+  const refreshUsers = useCallback(async () => {
+    try {
+      const apiUsers = await getUsers()
+      setUsers(apiUsers)
+      localStorage.setItem('portalAoptiUsers', JSON.stringify(apiUsers))
+      window.dispatchEvent(new Event('portalAoptiUsers-changed'))
+      return apiUsers
+    } catch (error) {
+      setUsers([])
+      localStorage.removeItem('portalAoptiUsers')
+      throw error
+    }
+  }, [])
 
   useEffect(() => {
     const storedUser = localStorage.getItem('portalAoptiCurrentUser')
     if (storedUser) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setUser(JSON.parse(storedUser))
     }
 
@@ -72,20 +98,9 @@ function UserProvider({ children }) {
 
     async function loadUsers() {
       try {
-        const apiUsers = await getUsers()
-        if (cancelled) return
-        const normalizedUsers = apiUsers.length > 0 ? apiUsers : initialUsers
-        setUsers(normalizedUsers)
-        localStorage.setItem('portalAoptiUsers', JSON.stringify(normalizedUsers))
-      } catch (error) {
-        if (cancelled) return
-        const storedUsers = localStorage.getItem('portalAoptiUsers')
-        if (storedUsers) {
-          setUsers(JSON.parse(storedUsers))
-        } else {
-          setUsers(initialUsers)
-          localStorage.setItem('portalAoptiUsers', JSON.stringify(initialUsers))
-        }
+        await refreshUsers()
+      } catch (_error) {
+        setUsers([])
       } finally {
         if (!cancelled) {
           setIsLoading(false)
@@ -98,7 +113,7 @@ function UserProvider({ children }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [refreshUsers])
 
   const login = useCallback(async (username, password) => {
     try {
@@ -108,6 +123,7 @@ function UserProvider({ children }) {
         username: result.user.username,
         name: result.user.name,
         role: result.user.role,
+        must_change_password: Boolean(result.user.must_change_password),
       }
 
       setUser(userWithoutPassword)
@@ -131,46 +147,13 @@ function UserProvider({ children }) {
 
       return { success: true, user: userWithoutPassword, token: result.token }
     } catch (error) {
-      const foundUser = users.find(
-        (u) => u.username === username && u.password === password
-      )
-      if (!foundUser) {
-        return { success: false, error: 'Username atau password salah' }
-      }
-
-      const userWithoutPassword = {
-        id: foundUser.id,
-        username: foundUser.username,
-        name: foundUser.name,
-        role: foundUser.role,
-      }
-      setUser(userWithoutPassword)
-      localStorage.setItem('portalAoptiCurrentUser', JSON.stringify(userWithoutPassword))
-      localStorage.setItem('spiHubToken', 'logged-in')
-      localStorage.setItem('spiHubUserName', userWithoutPassword.name)
-
-      const logEntry = {
-        id: `log-${Date.now()}`,
-        userId: foundUser.id,
-        user: foundUser.name,
-        userRole: foundUser.role,
-        action: 'Login',
-        details: `User ${foundUser.name} (${foundUser.username}) berhasil masuk ke sistem`,
-        timestamp: new Date().toISOString(),
-        ipAddress: '127.0.0.1',
-        category: foundUser.role,
-      }
-      const existingLogs = JSON.parse(localStorage.getItem('portalAoptiActivityLogs') || '[]')
-      localStorage.setItem('portalAoptiActivityLogs', JSON.stringify([logEntry, ...existingLogs]))
-
-      return { success: true, user: userWithoutPassword }
+      return { success: false, error: extractApiError(error, 'Tidak dapat terhubung ke database') }
     }
-  }, [users])
+  }, [])
 
   const logout = useCallback(() => {
     const currentUserData = JSON.parse(localStorage.getItem('portalAoptiCurrentUser'))
     if (currentUserData) {
-      const foundUser = users.find((u) => u.id === currentUserData.id)
       // Log logout activity
       const logEntry = {
         id: `log-${Date.now()}`,
@@ -188,118 +171,111 @@ function UserProvider({ children }) {
     }
     setUser(null)
     localStorage.removeItem('portalAoptiCurrentUser')
-  }, [users])
+  }, [])
 
-  const createUser = useCallback((userData) => {
-    const existingUser = users.find((u) => u.username === userData.username)
-    if (existingUser) {
-      return { success: false, error: 'Username sudah digunakan' }
+  const createUser = useCallback(async (userData) => {
+    try {
+      const created = await apiCreateUser({
+        username: userData.username,
+        password: userData.password,
+        name: userData.name,
+        role: userData.role,
+        email: userData.email || '',
+        department: userData.department || '',
+        phone: userData.phone || '',
+        status: 'active',
+      })
+      await refreshUsers()
+      return { success: true, user: created }
+    } catch (error) {
+      return { success: false, error: extractApiError(error, 'Gagal membuat user') }
     }
+  }, [refreshUsers])
 
-    const newUser = {
-      id: `u${Date.now()}`,
-      username: userData.username,
-      password: userData.password,
-      name: userData.name,
-      role: userData.role,
-      email: userData.email || '',
-      department: userData.department || '',
-      phone: userData.phone || '',
-      status: 'active',
-      createdAt: new Date().toISOString(),
+  const updateUser = useCallback(async (userId, userData) => {
+    try {
+      await apiUpdateUser(userId, userData)
+      await refreshUsers()
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: extractApiError(error, 'Gagal mengupdate user') }
     }
+  }, [refreshUsers])
 
-    const updatedUsers = [...users, newUser]
-    setUsers(updatedUsers)
-    localStorage.setItem('portalAoptiUsers', JSON.stringify(updatedUsers))
-    return { success: true, user: newUser }
-  }, [users])
-
-  const updateUser = useCallback((userId, userData) => {
-    const userIndex = users.findIndex((u) => u.id === userId)
-    if (userIndex === -1) {
-      return { success: false, error: 'User tidak ditemukan' }
+  const resetPassword = useCallback(async (userId, newPassword) => {
+    try {
+      await apiResetUserPassword(userId, { password: newPassword })
+      await refreshUsers()
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: extractApiError(error, 'Gagal mereset password') }
     }
+  }, [refreshUsers])
 
-    if (userData.username !== users[userIndex].username) {
-      const existingUser = users.find((u) => u.username === userData.username && u.id !== userId)
-      if (existingUser) {
-        return { success: false, error: 'Username sudah digunakan' }
+  const changePassword = useCallback(async ({ currentPassword, newPassword, forced = false }) => {
+    try {
+      await apiChangePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+        forced,
+      })
+      const stored = JSON.parse(localStorage.getItem('portalAoptiCurrentUser') || 'null')
+      if (stored) {
+        const updated = { ...stored, must_change_password: false }
+        localStorage.setItem('portalAoptiCurrentUser', JSON.stringify(updated))
+        setUser(updated)
       }
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: extractApiError(error, 'Gagal mengganti password') }
     }
+  }, [])
 
-    const updatedUsers = [...users]
-    updatedUsers[userIndex] = {
-      ...updatedUsers[userIndex],
-      ...userData,
-    }
-    setUsers(updatedUsers)
-    localStorage.setItem('portalAoptiUsers', JSON.stringify(updatedUsers))
-    return { success: true }
-  }, [users])
-
-  const resetPassword = useCallback((userId, newPassword) => {
-    const userIndex = users.findIndex((u) => u.id === userId)
-    if (userIndex === -1) {
+  const toggleUserStatus = useCallback(async (userId) => {
+    const target = users.find((u) => u.id === userId)
+    if (!target) {
       return { success: false, error: 'User tidak ditemukan' }
     }
-
-    const updatedUsers = [...users]
-    updatedUsers[userIndex] = {
-      ...updatedUsers[userIndex],
-      password: newPassword,
-      lastPasswordReset: new Date().toISOString(),
+    const newStatus = target.status === 'active' ? 'inactive' : 'active'
+    try {
+      await apiUpdateUser(userId, { status: newStatus })
+      await refreshUsers()
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: extractApiError(error, 'Gagal mengubah status user') }
     }
-    setUsers(updatedUsers)
-    localStorage.setItem('portalAoptiUsers', JSON.stringify(updatedUsers))
-    return { success: true }
-  }, [users])
+  }, [users, refreshUsers])
 
-  const toggleUserStatus = useCallback((userId) => {
-    const userIndex = users.findIndex((u) => u.id === userId)
-    if (userIndex === -1) {
-      return { success: false, error: 'User tidak ditemukan' }
-    }
-
-    const updatedUsers = [...users]
-    const currentStatus = updatedUsers[userIndex].status
-    updatedUsers[userIndex] = {
-      ...updatedUsers[userIndex],
-      status: currentStatus === 'active' ? 'inactive' : 'active',
-    }
-    setUsers(updatedUsers)
-    localStorage.setItem('portalAoptiUsers', JSON.stringify(updatedUsers))
-    return { success: true }
-  }, [users])
-
-  const deleteUser = useCallback((userId) => {
+  const deleteUser = useCallback(async (userId) => {
     if (user && user.id === userId) {
       return { success: false, error: 'Tidak dapat menghapus user yang sedang login' }
     }
-
-    const updatedUsers = users.filter((u) => u.id !== userId)
-    setUsers(updatedUsers)
-    localStorage.setItem('portalAoptiUsers', JSON.stringify(updatedUsers))
-    return { success: true }
-  }, [users, user])
+    try {
+      await apiDeleteUser(userId)
+      await refreshUsers()
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: extractApiError(error, 'Gagal menghapus user') }
+    }
+  }, [user, refreshUsers])
 
   const hasPermission = useCallback((permission) => {
     if (!user) return false
     return ROLE_PERMISSIONS[user.role]?.[permission] || false
   }, [user])
 
-  const importUsers = useCallback((usersArray) => {
+  const importUsers = useCallback(async (usersArray) => {
     let imported = 0
     let skipped = 0
-    const updatedUsers = [...users]
+    const existingUsernames = new Set(users.map((u) => u.username))
 
-    usersArray.forEach((userData) => {
-      const existingUser = updatedUsers.find((u) => u.username === userData.username)
-      if (existingUser) {
+    for (const userData of usersArray) {
+      if (existingUsernames.has(userData.username)) {
         skipped++
-      } else {
-        updatedUsers.push({
-          id: `u${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        continue
+      }
+      try {
+        await apiCreateUser({
           username: userData.username,
           password: userData.password || 'password123',
           name: userData.name,
@@ -308,16 +284,17 @@ function UserProvider({ children }) {
           department: userData.department || '',
           phone: userData.phone || '',
           status: 'active',
-          createdAt: new Date().toISOString(),
         })
+        existingUsernames.add(userData.username)
         imported++
+      } catch (_error) {
+        skipped++
       }
-    })
+    }
 
-    setUsers(updatedUsers)
-    localStorage.setItem('portalAoptiUsers', JSON.stringify(updatedUsers))
+    await refreshUsers()
     return { success: true, imported, skipped }
-  }, [users])
+  }, [users, refreshUsers])
 
   const getUserActivities = useCallback((userId) => {
     const logs = JSON.parse(localStorage.getItem('portalAoptiActivityLogs') || '[]')
@@ -334,9 +311,11 @@ function UserProvider({ children }) {
     updateUser,
     deleteUser,
     resetPassword,
+    changePassword,
     toggleUserStatus,
     importUsers,
     getUserActivities,
+    refreshUsers,
     hasPermission,
     ROLES,
     ROLE_LABELS,
@@ -358,5 +337,6 @@ function useUser() {
   return context
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { UserProvider, useUser, ROLES, ROLE_LABELS, ROLE_PERMISSIONS }
 export default UserContext

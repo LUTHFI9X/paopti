@@ -16,6 +16,7 @@ $router->get('/api/health', [HealthController::class, 'index']);
 // Auth routes
 $router->post('/api/auth/login', [AuthController::class, 'login']);
 $router->post('/api/auth/logout', [AuthController::class, 'logout']);
+$router->post('/api/auth/change-password', [AuthController::class, 'changePassword']);
 $router->get('/api/auth/me', [AuthController::class, 'me']);
 $router->post('/api/auth/refresh', [AuthController::class, 'refresh']);
 $router->get('/api/auth/sessions', [AuthController::class, 'activeSessions']);

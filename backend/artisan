@@ -1,0 +1,39 @@
+#!/usr/bin/env php
+<?php
+// Simple artisan shim for this project — supports only "serve".
+$argv = $_SERVER['argv'];
+$cmd = isset($argv[1]) ? $argv[1] : null;
+if ($cmd === 'serve') {
+    $host = '127.0.0.1';
+    $port = 8000;
+    foreach (array_slice($argv, 2) as $arg) {
+        if (strpos($arg, '--host=') === 0) {
+            $host = substr($arg, 7);
+        }
+        if (strpos($arg, '--port=') === 0) {
+            $port = (int) substr($arg, 7);
+        }
+        if ($arg === '--help' || $arg === '-h') {
+            echo "SPI Hub uses a custom PHP mini-framework, not Laravel.\n";
+            echo "Usage: php artisan serve [--host=127.0.0.1] [--port=8000]\n";
+            exit(0);
+        }
+    }
+
+    $router = __DIR__ . '/router.php';
+    $socket = @fsockopen($host, $port, $errno, $errstr, 0.2);
+    if ($socket) {
+        fclose($socket);
+        fwrite(STDERR, "Port $port is already in use on $host.\n");
+        fwrite(STDERR, "Try: php artisan serve --port=8001\n");
+        exit(1);
+    }
+
+    echo "Starting development server at http://$host:$port\n";
+    $command = sprintf('php -S %s:%d %s', $host, $port, escapeshellarg($router));
+    passthru($command);
+    exit(0);
+}
+fwrite(STDERR, "This project is not Laravel. Only the 'serve' command is supported.\n");
+fwrite(STDERR, "Usage: php artisan serve [--host=127.0.0.1] [--port=8000]\n");
+exit(1);

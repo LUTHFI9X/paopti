@@ -8,6 +8,28 @@ $publicDir = __DIR__ . '/public';
 // Remove query string from URI
 $uri = parse_url($uri, PHP_URL_PATH);
 
+// Load environment variables from backend/.env (so getenv() works)
+$dotenvPath = __DIR__ . '/.env';
+if (file_exists($dotenvPath)) {
+    $lines = file($dotenvPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) {
+            continue;
+        }
+        if (strpos($line, '=') === false) {
+            continue;
+        }
+        [$name, $value] = explode('=', $line, 2);
+        $name = trim($name);
+        $value = trim($value);
+        if (!array_key_exists($name, $_ENV)) {
+            $_ENV[$name] = $value;
+            putenv("$name=$value");
+        }
+    }
+}
+
 // API routes - handle via application
 if (str_starts_with($uri, '/api')) {
     require_once __DIR__ . '/bootstrap/app.php';

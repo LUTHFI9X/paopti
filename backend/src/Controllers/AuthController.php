@@ -8,12 +8,6 @@ use App\Core\Database;
 
 final class AuthController
 {
-    private static array $defaultUsers = [
-        'admin' => ['id' => 'u1', 'username' => 'admin', 'password' => 'admin123', 'name' => 'Administrator', 'role' => 'admin', 'email' => 'admin@aopti.go.id', 'department' => 'Pengawasan Intern'],
-        'auditor' => ['id' => 'u2', 'username' => 'auditor', 'password' => 'auditor123', 'name' => 'Ahmad Auditor', 'role' => 'auditor', 'email' => 'ahmad.auditor@aopti.go.id', 'department' => 'Tim Audit 1'],
-        'kspi' => ['id' => 'u3', 'username' => 'kspi', 'password' => 'kspi123', 'name' => 'Budi KSPI', 'role' => 'kspi', 'email' => 'budi.kspi@aopti.go.id', 'department' => 'KSPI'],
-    ];
-
     public function login(Request $request): void
     {
         $username = trim((string) ($request->body['username'] ?? ''));
@@ -27,37 +21,34 @@ final class AuthController
             return;
         }
 
-        // Use default users for fast, reliable login
         $user = null;
-        $defaultUser = self::$defaultUsers[$username] ?? null;
-        if ($defaultUser && $defaultUser['password'] === $password) {
-            $user = $defaultUser;
-        }
 
-        // If not a default user, try database (with timeout)
-        if ($user === null) {
-            set_time_limit(5);
-            try {
-                $dbUser = Database::queryOne(
-                    "SELECT id, username, password, name, email, role, department FROM users WHERE username = ? AND status = 'active'",
-                    [$username]
-                );
+        set_time_limit(5);
+        try {
+            $dbUser = Database::queryOne(
+                "SELECT id, username, password, name, email, role, department,
+                        COALESCE(must_change_password, 0) AS must_change_password
+                 FROM users WHERE username = ? AND status = 'active'",
+                [$username]
+            );
 
-                if ($dbUser) {
-                    if (password_verify($password, $dbUser['password']) || $dbUser['password'] === $password) {
-                        $user = [
-                            'id' => $dbUser['id'],
-                            'username' => $dbUser['username'],
-                            'name' => $dbUser['name'],
-                            'role' => $dbUser['role'] ?? 'auditor',
-                            'email' => $dbUser['email'] ?? '',
-                            'department' => $dbUser['department'] ?? '',
-                        ];
-                    }
-                }
-            } catch (\Exception $e) {
-                // Database unavailable - login with default users only
+            if ($dbUser && (password_verify($password, $dbUser['password']) || $dbUser['password'] === $password)) {
+                $user = [
+                    'id' => $dbUser['id'],
+                    'username' => $dbUser['username'],
+                    'name' => $dbUser['name'],
+                    'role' => $dbUser['role'] ?? 'auditor',
+                    'email' => $dbUser['email'] ?? '',
+                    'department' => $dbUser['department'] ?? '',
+                    'must_change_password' => (int) ($dbUser['must_change_password'] ?? 0) === 1,
+                ];
             }
+        } catch (\Exception $e) {
+            Response::json([
+                'status' => 'error',
+                'message' => 'Tidak dapat terhubung ke database',
+            ], 500);
+            return;
         }
 
         if (!$user) {
@@ -112,9 +103,85 @@ final class AuthController
                     'role' => $user['role'],
                     'email' => $user['email'] ?? '',
                     'department' => $user['department'] ?? '',
+                    'must_change_password' => (bool) ($user['must_change_password'] ?? false),
                 ],
             ],
         ]);
+    }
+
+    public function changePassword(Request $request): void
+    {
+        $authHeader = $request->headers['Authorization'] ?? '';
+        if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+            Response::json(['status' => 'error', 'message' => 'Unauthorized'], 401);
+            return;
+        }
+        $token = substr($authHeader, 7);
+        $decoded = json_decode(base64_decode($token), true);
+        if (!$decoded || !isset($decoded['user_id'])) {
+            Response::json(['status' => 'error', 'message' => 'Token tidak valid'], 401);
+            return;
+        }
+
+        $currentPassword = (string) ($request->body['current_password'] ?? '');
+        $newPassword = (string) ($request->body['new_password'] ?? '');
+        $forced = (bool) ($request->body['forced'] ?? false);
+
+        if ($newPassword === '' || strlen($newPassword) < 8) {
+            Response::json(['status' => 'error', 'message' => 'Password baru minimal 8 karakter'], 422);
+            return;
+        }
+        if (!preg_match('/[A-Za-z]/', $newPassword) || !preg_match('/[0-9]/', $newPassword)) {
+            Response::json(['status' => 'error', 'message' => 'Password baru harus mengandung huruf dan angka'], 422);
+            return;
+        }
+
+        try {
+            $row = Database::queryOne(
+                "SELECT id, password, COALESCE(must_change_password,0) AS must_change_password FROM users WHERE id = ?",
+                [$decoded['user_id']]
+            );
+        } catch (\Exception $e) {
+            Response::json(['status' => 'error', 'message' => 'Gagal memuat user'], 500);
+            return;
+        }
+        if (!$row) {
+            Response::json(['status' => 'error', 'message' => 'User tidak ditemukan'], 404);
+            return;
+        }
+
+        $isForcedFlow = $forced && (int) $row['must_change_password'] === 1;
+        if (!$isForcedFlow) {
+            if ($currentPassword === '') {
+                Response::json(['status' => 'error', 'message' => 'Password saat ini wajib diisi'], 422);
+                return;
+            }
+            $ok = password_verify($currentPassword, $row['password']) || $row['password'] === $currentPassword;
+            if (!$ok) {
+                Response::json(['status' => 'error', 'message' => 'Password saat ini salah'], 401);
+                return;
+            }
+        }
+
+        if (password_verify($newPassword, $row['password']) || $row['password'] === $newPassword) {
+            Response::json(['status' => 'error', 'message' => 'Password baru tidak boleh sama dengan password lama'], 422);
+            return;
+        }
+
+        $hashed = password_hash($newPassword, PASSWORD_DEFAULT);
+        try {
+            Database::execute(
+                "UPDATE users SET password = ?, must_change_password = 0, password_changed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                [$hashed, $decoded['user_id']]
+            );
+        } catch (\Exception $e) {
+            Response::json(['status' => 'error', 'message' => 'Gagal memperbarui password'], 500);
+            return;
+        }
+
+        $this->logActivity($decoded['user_id'], 'Ganti Password', 'User mengganti password' . ($isForcedFlow ? ' (login pertama)' : ''), 'auth', $request);
+
+        Response::json(['status' => 'success', 'message' => 'Password berhasil diperbarui']);
     }
 
     public function logout(Request $request): void
@@ -126,11 +193,7 @@ final class AuthController
             $decoded = json_decode(base64_decode($token), true);
 
             if ($decoded && isset($decoded['user_id'])) {
-                // Get user info before invalidating
                 $user = $this->findUserById($decoded['user_id']);
-                if (!$user) {
-                    $user = self::$defaultUsers[$decoded['user_id']] ?? null;
-                }
 
                 // Invalidate session in database
                 try {
@@ -193,18 +256,7 @@ final class AuthController
 
         $userId = $decoded['user_id'];
 
-        // Try database first
         $user = $this->findUserById($userId);
-
-        // Fallback to default users
-        if ($user === null) {
-            $defaultUsers = [
-                'u1' => ['id' => 'u1', 'username' => 'admin', 'name' => 'Administrator', 'role' => 'admin', 'email' => 'admin@aopti.go.id', 'department' => 'Pengawasan Intern'],
-                'u2' => ['id' => 'u2', 'username' => 'auditor', 'name' => 'Ahmad Auditor', 'role' => 'auditor', 'email' => 'ahmad.auditor@aopti.go.id', 'department' => 'Tim Audit 1'],
-                'u3' => ['id' => 'u3', 'username' => 'kspi', 'name' => 'Budi KSPI', 'role' => 'kspi', 'email' => 'budi.kspi@aopti.go.id', 'department' => 'KSPI'],
-            ];
-            $user = $defaultUsers[$userId] ?? null;
-        }
 
         if (!$user) {
             Response::json([
@@ -253,16 +305,6 @@ final class AuthController
 
         $userId = $decoded['user_id'];
         $user = $this->findUserById($userId);
-
-        if (!$user) {
-            // Check default users
-            $defaultUsers = [
-                'u1' => ['id' => 'u1', 'username' => 'admin', 'name' => 'Administrator', 'role' => 'admin', 'email' => 'admin@aopti.go.id', 'department' => 'Pengawasan Intern'],
-                'u2' => ['id' => 'u2', 'username' => 'auditor', 'name' => 'Ahmad Auditor', 'role' => 'auditor', 'email' => 'ahmad.auditor@aopti.go.id', 'department' => 'Tim Audit 1'],
-                'u3' => ['id' => 'u3', 'username' => 'kspi', 'name' => 'Budi KSPI', 'role' => 'kspi', 'email' => 'budi.kspi@aopti.go.id', 'department' => 'KSPI'],
-            ];
-            $user = $defaultUsers[$userId] ?? null;
-        }
 
         if (!$user) {
             Response::json([
@@ -385,7 +427,7 @@ final class AuthController
     {
         try {
             $result = Database::queryOne(
-                "SELECT id, username, name, email, role, department FROM users WHERE id = ? AND status = 'active'",
+                "SELECT id, username, name, email, role, department, COALESCE(must_change_password,0) AS must_change_password FROM users WHERE id = ? AND status = 'active'",
                 [$userId]
             );
 
@@ -397,6 +439,7 @@ final class AuthController
                     'role' => $result['role'],
                     'email' => $result['email'] ?? '',
                     'department' => $result['department'] ?? '',
+                    'must_change_password' => (int) ($result['must_change_password'] ?? 0) === 1,
                 ];
             }
             return null;
@@ -420,18 +463,6 @@ final class AuthController
                 if ($user) {
                     $userName = $user['name'];
                     $userRole = $user['role'];
-                } else {
-                    // Check default users
-                    $defaultUsers = [
-                        'user-admin' => ['name' => 'Administrator', 'role' => 'admin'],
-                        'user-auditor' => ['name' => 'Ahmad Auditor', 'role' => 'auditor'],
-                        'user-kspi' => ['name' => 'Budi KSPI', 'role' => 'kspi'],
-                    ];
-                    $defaultUser = $defaultUsers[$userId] ?? null;
-                    if ($defaultUser) {
-                        $userName = $defaultUser['name'];
-                        $userRole = $defaultUser['role'];
-                    }
                 }
             }
 

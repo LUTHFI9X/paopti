@@ -1,9 +1,15 @@
 import { useState, useEffect } from 'react'
 import { useAppearance } from '../context/AppearanceContext'
 
-function SettingsPage() {
+function SettingsPage({ embedded = false }) {
   const [activeTab, setActiveTab] = useState('general')
-  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'light')
+  const [theme, setTheme] = useState(() => {
+    const savedTheme = localStorage.getItem('spiHubTheme') || localStorage.getItem('theme')
+    if (savedTheme === 'dark' || savedTheme === 'light') {
+      return savedTheme
+    }
+    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'
+  })
   const { settings: appearanceSettings, updateSetting: updateAppearance } = useAppearance()
   const [settings, setSettings] = useState({
     appName: localStorage.getItem('appName') || 'Portal AOPTI',
@@ -33,6 +39,7 @@ function SettingsPage() {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('spiHubTheme', theme)
     localStorage.setItem('theme', theme)
   }, [theme])
 
@@ -923,7 +930,7 @@ function SettingsPage() {
   }
 
   return (
-    <section className="page-wrap settings-page">
+    <section className={`page-wrap settings-page ${embedded ? 'settings-page-embedded' : ''}`}>
       <div className="page-header">
         <h2>Pengaturan Sistem</h2>
         <p>Kelola konfigurasi dan preferensi sistem Portal AOPTI</p>

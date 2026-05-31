@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useUser, ROLE_LABELS } from '../context/UserContext'
+import { useUser } from '../context/UserContext'
 
 function LoginPage() {
   const navigate = useNavigate()
@@ -22,6 +22,7 @@ function LoginPage() {
   useEffect(() => {
     const savedUser = localStorage.getItem('portalAoptiRememberedUser')
     if (savedUser) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setUsername(savedUser)
     }
   }, [])
@@ -49,12 +50,6 @@ function LoginPage() {
     }
     setIsSubmitting(false)
   }
-
-  const demoCredentials = [
-    { role: ROLE_LABELS[ROLES.ADMIN], username: 'admin', password: 'admin123' },
-    { role: ROLE_LABELS[ROLES.AUDITOR], username: 'auditor', password: 'auditor123' },
-    { role: ROLE_LABELS[ROLES.KSPI], username: 'kspi', password: 'kspi123' },
-  ]
 
   return (
     <div className="login-page-v2">
@@ -126,19 +121,8 @@ function LoginPage() {
       <div className="login-form-panel">
         <div className="login-form-wrapper">
           <div className="login-form-header">
-            <div className="form-icon">
-              <svg width="32" height="32" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="48" height="48" rx="12" fill="url(#logoGrad2)"/>
-                <path d="M14 34V18L24 14L34 18V34L24 38L14 34Z" stroke="white" strokeWidth="2" fill="none"/>
-                <path d="M14 18L24 22L34 18" stroke="white" strokeWidth="2"/>
-                <path d="M24 22V38" stroke="white" strokeWidth="2"/>
-                <defs>
-                  <linearGradient id="logoGrad2" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
-                    <stop stopColor="#1a5cbe"/>
-                    <stop offset="1" stopColor="#0c3d86"/>
-                  </linearGradient>
-                </defs>
-              </svg>
+            <div className="form-icon spi-login-logo" aria-label="Logo SPI">
+              <img src="/spi-logo.svg" alt="Logo SPI" />
             </div>
             <h2>Masuk ke Portal</h2>
             <p>Gunakan akun resmi AOPTI Anda untuk mengakses sistem</p>
@@ -238,50 +222,30 @@ function LoginPage() {
             </button>
           </form>
 
-          <div className="login-divider">
-            <span>Atau gunakan akun demo</span>
+          <div className="login-divider login-divider-soft">
+            <span>Akses Portal SPI</span>
           </div>
 
-          <div className="demo-accounts-grid">
-            {demoCredentials.map((cred) => (
-              <button
-                key={cred.username}
-                type="button"
-                className="demo-card"
-                onClick={() => {
-                  setUsername(cred.username)
-                  setPassword(cred.password)
-                }}
-              >
-                <div className="demo-card-icon">
-                  {cred.role === 'Admin' && (
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                    </svg>
-                  )}
-                  {cred.role === 'Auditor AOPTI' && (
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                      <circle cx="9" cy="7" r="4"/>
-                      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                    </svg>
-                  )}
-                  {cred.role === 'KSPI' && (
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <rect x="3" y="3" width="7" height="7"/>
-                      <rect x="14" y="3" width="7" height="7"/>
-                      <rect x="14" y="14" width="7" height="7"/>
-                      <rect x="3" y="14" width="7" height="7"/>
-                    </svg>
-                  )}
-                </div>
-                <div className="demo-card-content">
-                  <span className="demo-card-role">{cred.role}</span>
-                  <span className="demo-card-creds">{cred.username} / {cred.password}</span>
-                </div>
-              </button>
-            ))}
+          <div className="login-access-showcase">
+            <div className="login-access-card primary">
+              <span className="access-card-kicker">Terintegrasi</span>
+              <strong>Audit workflow dalam satu portal</strong>
+              <p>Rencana kegiatan, progres kerja, komunikasi tim, dan laporan tersusun dalam alur yang sama.</p>
+            </div>
+            <div className="login-access-grid">
+              <div className="login-access-chip">
+                <span>01</span>
+                <p>Rencana Audit</p>
+              </div>
+              <div className="login-access-chip">
+                <span>02</span>
+                <p>List Pekerjaan</p>
+              </div>
+              <div className="login-access-chip">
+                <span>03</span>
+                <p>Team Chat</p>
+              </div>
+            </div>
           </div>
 
           <div className="login-footer-info">

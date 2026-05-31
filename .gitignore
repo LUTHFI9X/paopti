@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Local environment files
+backend/.env
+frontend/.env
+
+# Local build cache
+frontend/.vite/
+
+# Local one-off assets
+1601434932301-peruri.jpg

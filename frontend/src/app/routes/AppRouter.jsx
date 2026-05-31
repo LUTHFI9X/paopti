@@ -8,6 +8,9 @@ import AuditPlanPage from '../../pages/AuditPlanPage'
 import ChatPage from '../../pages/ChatPage'
 import AdminPage from '../../pages/AdminPage'
 import NotFoundPage from '../../pages/NotFoundPage'
+import ChangePasswordPage from '../../pages/ChangePasswordPage'
+import HelpPage from '../../pages/HelpPage'
+import WelcomeTour from '../../components/onboarding/WelcomeTour'
 import { useUser, ROLES } from '../../context/UserContext'
 
 function ScrollToTop() {
@@ -37,6 +40,11 @@ function ProtectedRoute({ children, allowedRoles }) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
+  // Force change password gate
+  if (user.must_change_password && location.pathname !== '/change-password') {
+    return <Navigate to="/change-password" replace />
+  }
+
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     return <Navigate to="/dashboard" replace />
   }
@@ -50,6 +58,7 @@ function AppRouter() {
 
   useEffect(() => {
     if (!isLoading) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAuthReady(true)
     }
   }, [isLoading])
@@ -85,10 +94,19 @@ function AppRouter() {
   return (
     <>
       <ScrollToTop />
+      {isAuthenticated && !user?.must_change_password && <WelcomeTour />}
       <Routes>
         <Route
           path="/login"
-          element={isAuthenticated ? <Navigate to={user?.role === ROLES.ADMIN ? '/admin' : '/dashboard'} replace /> : <LoginPage />}
+          element={isAuthenticated ? <Navigate to={user?.must_change_password ? '/change-password' : (user?.role === ROLES.ADMIN ? '/admin' : '/dashboard')} replace /> : <LoginPage />}
+        />
+        <Route
+          path="/change-password"
+          element={
+            <ProtectedRoute>
+              <ChangePasswordPage />
+            </ProtectedRoute>
+          }
         />
         <Route
           element={
@@ -101,6 +119,7 @@ function AppRouter() {
           <Route path="/work-list" element={<WorkListPage />} />
           <Route path="/audit-plan" element={<AuditPlanPage />} />
           <Route path="/team-chat" element={<ChatPage />} />
+          <Route path="/help" element={<HelpPage />} />
           <Route
             path="/admin/*"
             element={
@@ -112,7 +131,7 @@ function AppRouter() {
         </Route>
         <Route
           path="/"
-          element={<Navigate to={isAuthenticated ? (user?.role === ROLES.ADMIN ? '/admin' : '/dashboard') : '/login'} replace />}
+          element={<Navigate to={isAuthenticated ? (user?.must_change_password ? '/change-password' : (user?.role === ROLES.ADMIN ? '/admin' : '/dashboard')) : '/login'} replace />}
         />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>

@@ -99,5 +99,6 @@ function useAppearance() {
   return context
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { AppearanceProvider, useAppearance, DEFAULT_SETTINGS, FONT_SIZES }
 export default AppearanceContext

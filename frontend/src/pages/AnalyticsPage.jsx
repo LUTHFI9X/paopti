@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useUser, ROLES } from '../context/UserContext'
 
 const currentYear = new Date().getFullYear()
@@ -188,7 +187,6 @@ const initialFindings = [
 ]
 
 function AnalyticsPage() {
-  const navigate = useNavigate()
   const { user } = useUser()
   const isKSPI = user?.role === ROLES.KSPI
 
@@ -210,6 +208,7 @@ function AnalyticsPage() {
 
     const { programs: migratedPrograms, tasks: migratedTasks } = migrateYearScopedData(rawPrograms, rawWorkList)
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPrograms(migratedPrograms)
     setWorkList(migratedTasks)
     setFindings(rawFindings)
@@ -735,7 +734,7 @@ function AnalyticsPage() {
                 <p>Tidak ada jadwal dalam periode ini</p>
               </div>
             ) : (
-              filteredTimelineTasks.map((task, index) => (
+              filteredTimelineTasks.map((task) => (
                 <div className="timeline-item" key={task.id}>
                   <div className={`timeline-dot timeline-${task.status}`} />
                   <div className="timeline-content">

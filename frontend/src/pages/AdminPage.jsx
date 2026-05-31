@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useUser, ROLES, ROLE_LABELS } from '../context/UserContext'
+import { useToast } from '../context/ToastContext'
 import SettingsPage from './SettingsPage'
 
 const ROLE_COLORS = {
@@ -16,10 +17,11 @@ const STATUS_COLORS = {
 
 const USERS_PER_PAGE = 10
 
-function AdminPage({ defaultTab = 'dashboard' }) {
+function AdminPage() {
   const location = useLocation()
   const navigate = useNavigate()
   const { users, user: currentUser, createUser, updateUser, deleteUser, resetPassword, toggleUserStatus, importUsers, getUserActivities } = useUser()
+  const toast = useToast()
 
   const [activeTab, setActiveTab] = useState(() => {
     // Only set initial tab from URL on first load
@@ -46,7 +48,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
   const [showProfileModal, setShowProfileModal] = useState(false)
   const [showResetPasswordModal, setShowResetPasswordModal] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
-  const [showActivityModal, setShowActivityModal] = useState(false)
+  // showActivityModal removed — unused
   const [editingUser, setEditingUser] = useState(null)
   const [viewingUser, setViewingUser] = useState(null)
   const [resetPasswordUser, setResetPasswordUser] = useState(null)
@@ -120,7 +122,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
   const [allFieldworks, setAllFieldworks] = useState({})
   const [programStats, setProgramStats] = useState([])
 
-  const [stats, setStats] = useState({
+  const [_stats, setStats] = useState({
     totalUsers: 0,
     totalPrograms: 0,
     totalTasks: 0,
@@ -130,6 +132,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
 
   useEffect(() => {
     const saved = localStorage.getItem('portalAoptiActivityLogs')
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (saved) setActivityLogs(JSON.parse(saved))
 
     const programs = JSON.parse(localStorage.getItem('portalAoptiPrograms') || '[]')
@@ -170,6 +173,14 @@ function AdminPage({ defaultTab = 'dashboard' }) {
       recentActivity: saved ? JSON.parse(saved).length : 0,
     })
   }, [])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setStats((currentStats) => ({
+      ...currentStats,
+      totalUsers: users.length,
+    }))
+  }, [users.length])
 
   const [auditorMenus, setAuditorMenus] = useState(() => {
     const saved = localStorage.getItem('portalAoptiAuditorMenus')
@@ -246,6 +257,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
   }, [filteredUsers, currentPage])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentPage(1)
   }, [searchQuery, filterRole, filterStatus])
 
@@ -265,6 +277,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
       'backup': 'backup',
     }
     const newTab = tabMap[path] || 'dashboard'
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActiveTab(newTab)
   }, [location.pathname])
 
@@ -277,8 +290,9 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     }
   }
 
-  function logActivity(action, details, userId = null) {
+  function logActivity(action, details, _userId = null) {
     const newLog = {
+      // eslint-disable-next-line react-hooks/purity
       id: Date.now(),
       timestamp: new Date().toISOString(),
       user: currentUser?.name || 'System',
@@ -335,7 +349,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     }))
   }
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault()
 
     if (!formData.username.trim() || !formData.name.trim()) {
@@ -362,7 +376,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
       if (formData.password.trim()) {
         updateData.password = formData.password
       }
-      const result = updateUser(editingUser.id, updateData)
+      const result = await updateUser(editingUser.id, updateData)
       if (result.success) {
         setMessage('User berhasil diperbarui')
         setMessageType('success')
@@ -373,7 +387,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
         setMessageType('error')
       }
     } else {
-      const result = createUser({
+      const result = await createUser({
         username: formData.username,
         password: formData.password,
         name: formData.name,
@@ -394,32 +408,48 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     }
   }
 
-  function handleDelete(userId) {
+  async function handleDelete(userId) {
     const userToDelete = users.find((u) => u.id === userId)
-    if (!window.confirm('Apakah Anda yakin ingin menghapus user ini?')) {
-      return
-    }
-    const result = deleteUser(userId)
+    const ok = await toast.confirm({
+      title: 'Hapus User',
+      message: `Yakin ingin menghapus ${userToDelete?.name || 'user ini'}? Tindakan tidak dapat dibatalkan.`,
+      confirmLabel: 'Hapus',
+      cancelLabel: 'Batal',
+      tone: 'danger',
+    })
+    if (!ok) return
+    const result = await deleteUser(userId)
     if (!result.success) {
       setMessage(result.error)
       setMessageType('error')
+      toast.error(result.error || 'Gagal menghapus user')
     } else {
       logActivity('Hapus User', `Menghapus user: ${userToDelete?.name}`)
+      toast.success(`User ${userToDelete?.name || ''} berhasil dihapus`)
     }
   }
 
-  function handleToggleStatus(userId) {
+  async function handleToggleStatus(userId) {
     const userToToggle = users.find((u) => u.id === userId)
     const newStatus = userToToggle?.status === 'active' ? 'nonaktifkan' : 'aktifkan'
-    if (!window.confirm(`Apakah Anda yakin ingin ${newStatus} user ini?`)) {
-      return
-    }
-    const result = toggleUserStatus(userId)
+    const ok = await toast.confirm({
+      title: 'Ubah Status User',
+      message: `Yakin ingin ${newStatus} ${userToToggle?.name || 'user ini'}?`,
+      confirmLabel: newStatus.charAt(0).toUpperCase() + newStatus.slice(1),
+    })
+    if (!ok) return
+    const result = await toggleUserStatus(userId)
     if (result.success) {
       logActivity('Ubah Status User', `${newStatus.charAt(0).toUpperCase() + newStatus.slice(1)}: ${userToToggle?.name}`)
+      toast.success(`Status user diperbarui`)
+    } else {
+      setMessage(result.error)
+      setMessageType('error')
+      toast.error(result.error || 'Gagal mengubah status')
     }
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleOpenProfile(user) {
     setViewingUser(user)
     const activities = getUserActivities(user.id)
@@ -427,6 +457,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     setShowProfileModal(true)
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleOpenResetPassword(user) {
     setResetPasswordUser(user)
     setResetPasswordData({ newPassword: '', confirmPassword: '' })
@@ -440,7 +471,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     setMessage('')
   }
 
-  function handleResetPasswordSubmit(e) {
+  async function handleResetPasswordSubmit(e) {
     e.preventDefault()
     if (!resetPasswordData.newPassword) {
       setMessage('Password baru harus diisi')
@@ -457,15 +488,19 @@ function AdminPage({ defaultTab = 'dashboard' }) {
       setMessageType('error')
       return
     }
-    const result = resetPassword(resetPasswordUser.id, resetPasswordData.newPassword)
+    const result = await resetPassword(resetPasswordUser.id, resetPasswordData.newPassword)
     if (result.success) {
       setMessage('Password berhasil direset')
       setMessageType('success')
       logActivity('Reset Password', `Mereset password: ${resetPasswordUser.name}`)
       setTimeout(handleCloseResetPassword, 1000)
+    } else {
+      setMessage(result.error)
+      setMessageType('error')
     }
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleOpenImport() {
     setShowImportModal(true)
   }
@@ -479,7 +514,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     if (!file) return
 
     const reader = new FileReader()
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const text = event.target.result
         const lines = text.split('\n').filter(line => line.trim())
@@ -516,12 +551,12 @@ function AdminPage({ defaultTab = 'dashboard' }) {
           return
         }
 
-        const result = importUsers(usersToImport)
+        const result = await importUsers(usersToImport)
         logActivity('Import User', `Mengimport ${result.imported} user (${result.skipped} dilewati)`)
         setMessage(`Berhasil import ${result.imported} user (${result.skipped} dilewati)`)
         setMessageType('success')
         setTimeout(handleCloseImport, 1500)
-      } catch (err) {
+      } catch (_err) {
         setMessage('Format file tidak valid')
         setMessageType('error')
       }
@@ -529,6 +564,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     reader.readAsText(file)
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleExportExcel() {
     const exportData = filteredUsers.map((user, idx) => ({
       '#': idx + 1,
@@ -557,6 +593,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     logActivity('Export User', `Mengexport ${filteredUsers.length} user`)
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleExportPDF() {
     const printContent = `
       <html>
@@ -611,6 +648,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     logActivity('Export User PDF', `Mengexport ${filteredUsers.length} user ke PDF`)
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleSettingChange(key, value) {
     const updated = { ...systemSettings, [key]: value }
     setSystemSettings(updated)
@@ -618,6 +656,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     logActivity('Ubah Pengaturan', `Mengubah ${key}`)
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleBackup() {
     const backupData = {
       backupDate: new Date().toISOString(),
@@ -650,9 +689,10 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     localStorage.setItem('portalAoptiBackupHistory', JSON.stringify(updatedHistory))
 
     logActivity('Backup Data', 'Membuat backup data sistem')
-    alert('Backup berhasil disimpan!')
+    toast.success('Backup berhasil disimpan!', { title: 'Berhasil' })
   }
 
+  // eslint-disable-next-line no-unused-vars
   function handleRestore(file) {
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -672,10 +712,10 @@ function AdminPage({ defaultTab = 'dashboard' }) {
           setSystemSettings(data.settings)
         }
         logActivity('Restore Data', `Merestore backup dari ${data.backupDate || 'file'}`)
-        alert('Restore berhasil! Refresh halaman untuk melihat perubahan.')
-        window.location.reload()
-      } catch (err) {
-        alert('Gagal restore: File tidak valid')
+        toast.success('Restore berhasil! Halaman akan dimuat ulang.', { title: 'Berhasil' })
+        setTimeout(() => window.location.reload(), 1200)
+      } catch (_err) {
+        toast.error('File backup tidak valid', { title: 'Gagal restore' })
       }
     }
     reader.readAsText(file)
@@ -710,7 +750,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
       case 'logs':
         return renderLogsTab()
       case 'settings':
-        return <SettingsPage />
+        return <SettingsPage embedded />
       case 'backup':
         return (
           <div className="backup-page">
@@ -1146,9 +1186,12 @@ function AdminPage({ defaultTab = 'dashboard' }) {
       return logDate >= weekAgo
     }).length
 
-    // Get recent logs by category
+    // Get recent logs by category — kept for potential future use
+    // eslint-disable-next-line no-unused-vars
     const recentAdminLogs = activityLogs.filter(log => log.userRole === ROLES.ADMIN).slice(0, 3)
+    // eslint-disable-next-line no-unused-vars
     const recentAuditorLogs = activityLogs.filter(log => log.userRole === ROLES.AUDITOR).slice(0, 3)
+    // eslint-disable-next-line no-unused-vars
     const recentKspiLogs = activityLogs.filter(log => log.userRole === ROLES.KSPI).slice(0, 3)
 
     return (
@@ -1609,29 +1652,62 @@ function AdminPage({ defaultTab = 'dashboard' }) {
 
         <div className="ku-stats-row">
           <div className="ku-stat-box" onClick={() => { setFilterRole('all'); setFilterStatus('all'); setSearchQuery(''); }}>
-            <span className="ku-stat-value">{roleCounts.all}</span>
-            <span className="ku-stat-label">Total User</span>
-            <span className="ku-stat-desc">Seluruh pengguna sistem</span>
+            <div className="ku-stat-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+            </div>
+            <div className="ku-stat-content">
+              <span className="ku-stat-value">{roleCounts.all}</span>
+              <span className="ku-stat-label">Total User</span>
+              <span className="ku-stat-desc">Seluruh pengguna sistem</span>
+            </div>
           </div>
           <div className="ku-stat-box admin" onClick={() => { setFilterRole(ROLES.ADMIN); setFilterStatus('all'); }}>
-            <span className="ku-stat-value">{roleCounts.admin}</span>
-            <span className="ku-stat-label">Admin</span>
-            <span className="ku-stat-desc">Kelola sistem & pengguna</span>
+            <div className="ku-stat-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+            </div>
+            <div className="ku-stat-content">
+              <span className="ku-stat-value">{roleCounts.admin}</span>
+              <span className="ku-stat-label">Admin</span>
+              <span className="ku-stat-desc">Kelola sistem & pengguna</span>
+            </div>
           </div>
           <div className="ku-stat-box auditor" onClick={() => { setFilterRole(ROLES.AUDITOR); setFilterStatus('all'); }}>
-            <span className="ku-stat-value">{roleCounts.auditor}</span>
-            <span className="ku-stat-label">Auditor AOPTI</span>
-            <span className="ku-stat-desc">Tim audit lapangan</span>
+            <div className="ku-stat-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M9 11l3 3L22 4" />
+                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+              </svg>
+            </div>
+            <div className="ku-stat-content">
+              <span className="ku-stat-value">{roleCounts.auditor}</span>
+              <span className="ku-stat-label">Auditor AOPTI</span>
+              <span className="ku-stat-desc">Tim audit lapangan</span>
+            </div>
           </div>
           <div className="ku-stat-box kspi" onClick={() => { setFilterRole(ROLES.KSPI); setFilterStatus('all'); }}>
-            <span className="ku-stat-value">{roleCounts.kspi}</span>
-            <span className="ku-stat-label">KSPI</span>
-            <span className="ku-stat-desc">Pengawas intern</span>
+            <div className="ku-stat-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z" />
+              </svg>
+            </div>
+            <div className="ku-stat-content">
+              <span className="ku-stat-value">{roleCounts.kspi}</span>
+              <span className="ku-stat-label">KSPI</span>
+              <span className="ku-stat-desc">Pengawas intern</span>
+            </div>
           </div>
         </div>
 
         <div className="ku-toolbar">
-          <div className="search-box">
+          <label className="search-box">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -1642,7 +1718,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
-          </div>
+          </label>
           <div className="ku-filter-btns">
             <span className="ku-filter-label">Role:</span>
             <button
@@ -2024,6 +2100,9 @@ function AdminPage({ defaultTab = 'dashboard' }) {
       [ROLES.AUDITOR]: activityLogs.filter(log => log.category === ROLES.AUDITOR).length,
       [ROLES.ADMIN]: activityLogs.filter(log => log.category === ROLES.ADMIN).length,
     }
+    const todayLogCount = activityLogs.filter((log) => new Date(log.timestamp).toDateString() === new Date().toDateString()).length
+    const uniqueUserCount = [...new Set(activityLogs.map((log) => log.userId || log.user).filter(Boolean))].length
+    const destructiveCount = activityLogs.filter((log) => /hapus|delete|reset/i.test(log.action)).length
 
     return (
       <div className="logs-section">
@@ -2035,10 +2114,17 @@ function AdminPage({ defaultTab = 'dashboard' }) {
           <button
             type="button"
             className="danger-btn"
-            onClick={() => {
-              if (window.confirm('Apakah Anda yakin ingin menghapus semua log aktivitas?')) {
+            onClick={async () => {
+              const ok = await toast.confirm({
+                title: 'Bersihkan Log',
+                message: 'Semua log aktivitas akan dihapus. Lanjutkan?',
+                confirmLabel: 'Hapus Semua',
+                tone: 'danger',
+              })
+              if (ok) {
                 setActivityLogs([])
                 localStorage.removeItem('portalAoptiActivityLogs')
+                toast.success('Log aktivitas telah dibersihkan')
               }
             }}
           >
@@ -2051,6 +2137,21 @@ function AdminPage({ defaultTab = 'dashboard' }) {
         </div>
         <div className="logs-count-summary">
           <span className="logs-count">{filteredLogs.length} dari {activityLogs.length} aktivitas</span>
+        </div>
+
+        <div className="logs-insight-strip">
+          <div className="logs-insight-card">
+            <span>Aktivitas Hari Ini</span>
+            <strong>{todayLogCount}</strong>
+          </div>
+          <div className="logs-insight-card">
+            <span>User Terlibat</span>
+            <strong>{uniqueUserCount}</strong>
+          </div>
+          <div className="logs-insight-card logs-insight-card--risk">
+            <span>Aksi Sensitif</span>
+            <strong>{destructiveCount}</strong>
+          </div>
         </div>
 
         {/* Log Category Tabs */}
@@ -2102,7 +2203,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
         </div>
 
         <div className="logs-filters">
-          <div className="search-box">
+          <label className="search-box">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="8" />
               <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -2113,7 +2214,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
               value={logSearch}
               onChange={(e) => setLogSearch(e.target.value)}
             />
-          </div>
+          </label>
           <select value={logFilterRole} onChange={(e) => setLogFilterRole(e.target.value)} className="log-filter-select">
             <option value="all">Semua Role</option>
             <option value={ROLES.ADMIN}>Admin</option>
@@ -2128,7 +2229,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
           </select>
         </div>
 
-        <div className="logs-list">
+        <div className="logs-list logs-timeline-list">
           {filteredLogs.length === 0 ? (
             <div className="empty-state">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -2141,7 +2242,7 @@ function AdminPage({ defaultTab = 'dashboard' }) {
             </div>
           ) : (
             filteredLogs.map((log) => (
-              <div key={log.id} className={`log-item ${log.userRole ? `log-item-${log.userRole}` : ''}`}>
+              <div key={log.id} className={`log-item log-timeline-item ${log.userRole ? `log-item-${log.userRole}` : ''}`}>
                 <div className="log-icon" style={{
                   color: log.userRole === ROLES.ADMIN ? '#7c3aed' :
                          log.userRole === ROLES.AUDITOR ? '#2563eb' :
@@ -2539,49 +2640,9 @@ function AdminPage({ defaultTab = 'dashboard' }) {
     )
   }
 
-  const tabs = [
-    { id: 'dashboard', label: 'Admin Panel', icon: 'grid' },
-    { id: 'users', label: 'Kelola User', icon: 'users' },
-    { id: 'roles', label: 'Role & Akses', icon: 'shield' },
-    { id: 'logs', label: 'Log Aktivitas', icon: 'activity' },
-    { id: 'settings', label: 'Pengaturan', icon: 'settings' },
-    { id: 'backup', label: 'Backup & Restore', icon: 'backup' },
-  ]
-
-  const currentTab = tabs.find((tab) => tab.id === activeTab) || tabs[0]
-  const pageHeaderDescriptionMap = {
-    dashboard: 'Ringkasan cepat dan akses kontrol inti untuk administrator.',
-    users: 'Kelola user, hak akses, dan status akun secara efektif.',
-    roles: 'Atur role dan hak akses untuk keamanan sistem.',
-    logs: 'Catat dan pantau aktivitas login, logout, serta perubahan data oleh pengguna',
-    settings: 'Kelola konfigurasi dan preferensi sistem Portal AOPTI',
-    backup: 'Kelola backup data dan pulihkan sistem jika terjadi masalah',
-  }
-  const pageHeaderTitle = currentTab.label
-  const pageHeaderDescription = pageHeaderDescriptionMap[currentTab.id] || 'Kelola data dan konfigurasi admin secara efisien.'
-
-  const tabIcons = {
-    grid: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>,
-    users: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
-    folder: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>,
-    list: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>,
-    alert: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
-    chart: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
-    shield: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
-    activity: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
-    settings: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
-    database: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>,
-    backup: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
-  }
-
   return (
-    <section className="page-wrap">
-      <div className="page-header">
-        <h2>{pageHeaderTitle}</h2>
-        <p>{pageHeaderDescription}</p>
-      </div>
-
-      <article className="card admin-card">
+    <section className="page-wrap admin-page-shell">
+      <article className="admin-card admin-content-surface">
         {renderTabContent()}
       </article>
 

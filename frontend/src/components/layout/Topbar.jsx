@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useUser, ROLES, ROLE_LABELS } from '../../context/UserContext'
 
@@ -19,6 +19,13 @@ function Topbar({ collapsed = false, onToggleSidebar }) {
 
   // Get reminders from localStorage
   const [reminders, setReminders] = useState([])
+  const [readNotificationIds, setReadNotificationIds] = useState(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('spiHubReadNotifications') || '[]'))
+    } catch {
+      return new Set()
+    }
+  })
 
   useEffect(() => {
     function loadReminders() {
@@ -28,18 +35,33 @@ function Topbar({ collapsed = false, onToggleSidebar }) {
 
       const upcomingReminders = workList
         .map(task => {
-          const startDate = new Date(task.startDate)
+          const startDate = new Date(task.startDate || task.start_date || task.date)
+          if (Number.isNaN(startDate.getTime())) return null
           startDate.setHours(0, 0, 0, 0)
           const daysUntil = Math.ceil((startDate - today) / (1000 * 60 * 60 * 24))
+          const progress = Number(task.progress || 0)
+          const taskName = task.taskName || task.task_name || 'Tugas audit'
+          const programName = task.programName || task.program_name || 'Program kerja'
 
-          if (daysUntil === 7 || daysUntil === 3 || daysUntil === 1 || daysUntil === 0) {
+          if (daysUntil < 0 && progress < 100) {
             return {
-              id: task.id,
-              title: daysUntil === 0 ? 'Hari Ini' : `H-${daysUntil}`,
-              message: task.taskName,
-              programName: task.programName,
+              id: `overdue-${task.id}`,
+              title: 'Tugas Terlambat',
+              message: taskName,
+              programName,
               daysUntil,
-              unread: true,
+              tone: 'danger',
+            }
+          }
+
+          if (progress < 100 && (daysUntil === 7 || daysUntil === 3 || daysUntil === 1 || daysUntil === 0)) {
+            return {
+              id: `deadline-${daysUntil}-${task.id}`,
+              title: daysUntil === 0 ? 'Hari Ini' : `H-${daysUntil}`,
+              message: taskName,
+              programName,
+              daysUntil,
+              tone: daysUntil <= 1 ? 'warning' : 'info',
             }
           }
           return null
@@ -60,12 +82,12 @@ function Topbar({ collapsed = false, onToggleSidebar }) {
     }
   }, [])
 
-  const staticNotifications = [
-    { id: 1, title: 'Audit Plan Updated', message: 'Q1 2026 audit plan approved', time: '2 min ago', unread: false },
-    { id: 2, title: 'Task Completed', message: 'Fieldwork BIRO A done', time: '1 hour ago', unread: false },
-  ]
-
-  const allNotifications = [...reminders, ...staticNotifications]
+  const allNotifications = useMemo(() => {
+    return reminders.map((notification) => ({
+      ...notification,
+      unread: !readNotificationIds.has(notification.id),
+    }))
+  }, [readNotificationIds, reminders])
   const unreadCount = allNotifications.filter(n => n.unread).length
 
   useEffect(() => {
@@ -95,7 +117,10 @@ function Topbar({ collapsed = false, onToggleSidebar }) {
   }
 
   function markAllRead() {
-    notifications.forEach(n => n.unread = false)
+    const nextIds = new Set(readNotificationIds)
+    allNotifications.forEach((notification) => nextIds.add(notification.id))
+    setReadNotificationIds(nextIds)
+    localStorage.setItem('spiHubReadNotifications', JSON.stringify([...nextIds]))
   }
 
   return (
@@ -184,12 +209,14 @@ function Topbar({ collapsed = false, onToggleSidebar }) {
             {showNotifications && (
               <div className="dropdown notification-dropdown">
                 <div className="dropdown-header">
-                  <h4>Notifications</h4>
+                  <h4>Notifikasi Fokus</h4>
                   {unreadCount > 0 && <button onClick={markAllRead}>Mark all read</button>}
                 </div>
                 <div className="dropdown-body">
-                  {allNotifications.map(n => (
-                    <div key={n.id} className={`notif-item ${n.unread ? 'unread' : ''}`}>
+                  {allNotifications.length === 0 ? (
+                    <div className="notif-empty">Tidak ada deadline penting saat ini</div>
+                  ) : allNotifications.map(n => (
+                    <div key={n.id} className={`notif-item ${n.unread ? 'unread' : ''} notif-${n.tone || 'info'}`}>
                       <div className="notif-dot"></div>
                       <div className="notif-content">
                         <h5>{n.title}</h5>

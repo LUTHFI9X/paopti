@@ -129,6 +129,9 @@ final class AuditPlanController
                     json_encode($body['phases'] ?? []),
                 ]
             );
+
+            $this->syncWorklistProgressFromAgendas($body['task_id'] ?? null);
+
         } catch (\Exception $e) {
             Response::json(['status' => 'error', 'message' => 'Gagal menyimpan agenda'], 500);
             return;
@@ -162,7 +165,7 @@ final class AuditPlanController
         $body = $request->body;
 
         try {
-            $existing = Database::queryOne("SELECT id FROM audit_plans WHERE id = ?", [$id]);
+            $existing = Database::queryOne("SELECT id, task_id FROM audit_plans WHERE id = ?", [$id]);
         } catch (\Exception $e) {
             error_log("Error checking existing plan: " . $e->getMessage());
             $existing = null;
@@ -172,6 +175,8 @@ final class AuditPlanController
             Response::json(['status' => 'error', 'message' => 'Agenda tidak ditemukan'], 404);
             return;
         }
+
+        $originalTaskId = $existing['task_id'] ?? null;
 
         if (isset($body['progress'])) {
             $progress = (int) $body['progress'];
@@ -209,6 +214,13 @@ final class AuditPlanController
             error_log("Executing: " . $sql . " with values: " . json_encode($values));
             Database::execute($sql, $values);
             $updated = Database::queryOne("SELECT * FROM audit_plans WHERE id = ?", [$id]);
+
+            $updatedTaskId = $updated['task_id'] ?? ($body['task_id'] ?? $originalTaskId);
+            $this->syncWorklistProgressFromAgendas($originalTaskId);
+            if ($updatedTaskId !== $originalTaskId) {
+                $this->syncWorklistProgressFromAgendas($updatedTaskId);
+            }
+
             Response::json(['status' => 'success', 'message' => 'Agenda berhasil diupdate', 'data' => $updated]);
         } catch (\Exception $e) {
             error_log("Error updating audit plan: " . $e->getMessage() . " - SQL: " . $sql);
@@ -220,7 +232,7 @@ final class AuditPlanController
     public function destroy(Request $request, string $id): void
     {
         try {
-            $existing = Database::queryOne("SELECT id FROM audit_plans WHERE id = ?", [$id]);
+            $existing = Database::queryOne("SELECT id, task_id FROM audit_plans WHERE id = ?", [$id]);
         } catch (\Exception $e) {
             $existing = null;
         }
@@ -232,11 +244,102 @@ final class AuditPlanController
 
         try {
             Database::execute("DELETE FROM audit_plans WHERE id = ?", [$id]);
+
+            $this->syncWorklistProgressFromAgendas($existing['task_id'] ?? null);
         } catch (\Exception $e) {
             Response::json(['status' => 'error', 'message' => 'Gagal menghapus agenda'], 500);
             return;
         }
 
         Response::json(['status' => 'success', 'message' => 'Agenda berhasil dihapus']);
+    }
+
+    private function syncWorklistProgressFromAgendas(?string $taskIdentifier): void
+    {
+        if (empty($taskIdentifier)) {
+            return;
+        }
+
+        try {
+            // Ambil semua agenda (audit DAN non_audit) untuk tugas ini
+            $agendas = Database::query(
+                "SELECT phase_label, progress, tahap_type
+                 FROM audit_plans
+                 WHERE task_id = ? AND is_agenda = 1",
+                [$taskIdentifier]
+            );
+
+            $maxProgress = 0;
+            foreach ($agendas as $agenda) {
+                if (($agenda['tahap_type'] ?? 'audit') === 'audit') {
+                    // Audit: progress ditentukan dari phase label
+                    $phaseProgress = $this->progressFromPhaseLabel($agenda['phase_label'] ?? '');
+                } else {
+                    // Non-audit: gunakan nilai progress yang tersimpan langsung
+                    $phaseProgress = (int) ($agenda['progress'] ?? 0);
+                }
+                $maxProgress = max($maxProgress, $phaseProgress);
+            }
+
+            $normalizedProgress = $this->normalizeWorklistProgress($maxProgress);
+            $status = $this->statusFromProgress($normalizedProgress);
+
+            Database::execute(
+                "UPDATE worklist SET progress = ?, status = ? WHERE id = ? OR task_id = ?",
+                [$normalizedProgress, $status, $taskIdentifier, $taskIdentifier]
+            );
+        } catch (\Exception $e) {
+            error_log('Failed syncing worklist progress: ' . $e->getMessage());
+        }
+    }
+
+    private function progressFromPhaseLabel(string $phaseLabel): int
+    {
+        $normalized = strtolower(trim($phaseLabel));
+
+        if (str_contains($normalized, 'entry')) {
+            return 25;
+        }
+        if (str_contains($normalized, 'konfirmasi')) {
+            return 50;
+        }
+        if (str_contains($normalized, 'expose')) {
+            return 75;
+        }
+        if (str_contains($normalized, 'exit')) {
+            return 100;
+        }
+
+        return 0;
+    }
+
+    private function normalizeWorklistProgress(int $progress): int
+    {
+        if ($progress >= 100) {
+            return 100;
+        }
+        if ($progress >= 75) {
+            return 75;
+        }
+        if ($progress >= 50) {
+            return 50;
+        }
+        if ($progress >= 25) {
+            return 25;
+        }
+
+        return 0;
+    }
+
+    private function statusFromProgress(int $progress): string
+    {
+        if ($progress >= 100) {
+            return 'completed';
+        }
+        if ($progress > 0) {
+            return 'in_progress';
+        }
+
+        return 'scheduled';
     }
 }

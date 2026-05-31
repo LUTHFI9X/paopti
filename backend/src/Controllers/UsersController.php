@@ -23,7 +23,8 @@ final class UsersController
                 return $user;
             }, $users);
         } catch (\Exception $e) {
-            $users = [];
+            Response::json(['status' => 'error', 'message' => 'Gagal mengambil user dari database'], 500);
+            return;
         }
 
         Response::json([
@@ -94,7 +95,7 @@ final class UsersController
 
         try {
             Database::execute(
-                "INSERT INTO users (id, username, password, name, role, email, department, phone, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO users (id, username, password, name, role, email, department, phone, status, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                 [$id, $username, $hashedPassword, $name, $role, $email, $department, $phone, $status]
             );
         } catch (\Exception $e) {
@@ -227,7 +228,13 @@ final class UsersController
         }
 
         try {
-            Database::execute("DELETE FROM users WHERE id = ?", [$id]);
+            Database::execute("DELETE FROM sessions WHERE user_id = ?", [$id]);
+            $deletedRows = Database::execute("DELETE FROM users WHERE id = ?", [$id]);
+
+            if ($deletedRows < 1) {
+                Response::json(['status' => 'error', 'message' => 'User tidak ditemukan'], 404);
+                return;
+            }
         } catch (\Exception $e) {
             Response::json(['status' => 'error', 'message' => 'Gagal menghapus user'], 500);
             return;
@@ -259,7 +266,7 @@ final class UsersController
         $hashedPassword = password_hash($body['password'], PASSWORD_DEFAULT);
 
         try {
-            Database::execute("UPDATE users SET password = ? WHERE id = ?", [$hashedPassword, $id]);
+            Database::execute("UPDATE users SET password = ?, must_change_password = 1, password_changed_at = NULL WHERE id = ?", [$hashedPassword, $id]);
         } catch (\Exception $e) {
             Response::json(['status' => 'error', 'message' => 'Gagal mereset password'], 500);
             return;

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useUser, ROLES } from '../context/UserContext'
+import { useToast } from '../context/ToastContext'
 import {
   createAuditPlan,
   deleteAuditPlan,
   deleteWorkItem,
   getAuditPlans,
   getWorkList,
+  updateAuditPlan,
 } from '../services/spiHubApi'
 
 const auditPhases = [
@@ -120,6 +122,7 @@ function buildCalendarDays(year, month) {
   return days
 }
 
+// eslint-disable-next-line no-unused-vars
 function formatDateLong(dateStr) {
   const d = new Date(dateStr)
   return d.toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
@@ -184,15 +187,81 @@ function normalizeWorkItem(item) {
   }
 }
 
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value
+  if (typeof value !== 'string' || !value) return []
+
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function buildWorkListAgendas(workList) {
+  return workList.map((item) => ({
+    id: `wl-${item.id}`,
+    taskId: item.id,
+    programName: item.programName,
+    taskName: item.taskName,
+    startDate: item.startDate || item.date,
+    endDate: item.endDate || item.startDate || item.date,
+    location: item.location,
+    // Selalu 0% — progress tugas di kalender hanya menunjukkan jadwal mulai,
+    // bukan progress audit; progress audit ditampilkan oleh agenda phase-nya sendiri
+    progress: 0,
+    status: 'scheduled',
+    completed: false,
+    isAgenda: false,
+    tahapType: 'audit',
+    phaseLabel: 'Program Kerja',
+    time: item.time || '',
+    phases: [],
+  }))
+}
+
+function buildAgendaState(workListResponse, auditPlanResponse) {
+  const workList = (workListResponse.worklist || []).map(normalizeWorkItem)
+  const workListAgendas = buildWorkListAgendas(workList)
+
+  const auditPlanAgendas = (auditPlanResponse || []).map((plan) => ({
+    id: plan.id,
+    taskId: plan.task_id,
+    programName: plan.program_name,
+    taskName: plan.task_name,
+    startDate: plan.start_date,
+    endDate: plan.end_date || plan.start_date,
+    location: plan.location,
+    progress: Number(plan.progress) || 0,
+    status: plan.status || 'scheduled',
+    completed: Boolean(plan.completed),
+    isAgenda: Boolean(plan.is_agenda),
+    tahapType: plan.tahap_type || 'audit',
+    phaseLabel: plan.phase_label || '',
+    customPercentage: Number(plan.custom_percentage) || 0,
+    note: plan.note || '',
+    time: plan.time || '',
+    team: parseJsonArray(plan.team),
+    phases: parseJsonArray(plan.phases),
+  }))
+
+  return {
+    workList,
+    agendas: [...workListAgendas, ...auditPlanAgendas],
+  }
+}
+
 function AuditPlanPage() {
   const { user } = useUser()
+  const toast = useToast()
   const isKSPI = user?.role === ROLES.KSPI
 
   const now = new Date()
   const [selectedYear, setSelectedYear] = useState(now.getFullYear())
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth())
   const [selectedDate, setSelectedDate] = useState(isoDate(now.getFullYear(), now.getMonth(), now.getDate()))
-  const [showHolidayLegend, setShowHolidayLegend] = useState(false)
+  // showHolidayLegend removed — unused
   const [searchQuery, setSearchQuery] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
   const [workListData, setWorkListData] = useState([])
@@ -213,9 +282,51 @@ function AuditPlanPage() {
   const [formDate, setFormDate] = useState(isoDate(now.getFullYear(), now.getMonth(), now.getDate()))
   const [formTime, setFormTime] = useState('')
   const [formMessage, setFormMessage] = useState('')
+  const [expandedTimelineKey, setExpandedTimelineKey] = useState(null)
+  const [expandedAgendaGroupKey, setExpandedAgendaGroupKey] = useState(null)
 
   // Agendas state
   const [agendas, setAgendas] = useState([])
+  // Non-audit progress edit state
+  const [editingNonAuditId, setEditingNonAuditId] = useState(null)
+  const [nonAuditProgressMsg, setNonAuditProgressMsg] = useState('')
+
+  const nonAuditProgressOptions = [
+    { value: 25, label: '25%', color: '#1667c8', bg: '#edf4ff' },
+    { value: 50, label: '50%', color: '#0c3d86', bg: '#e8efff' },
+    { value: 75, label: '75%', color: '#b15b08', bg: '#fff4e6' },
+    { value: 100, label: '100%', color: '#22a95f', bg: '#e6f7ed' },
+  ]
+
+  async function handleNonAuditProgressUpdate(agendaId, progress) {
+    try {
+      const status = progress >= 100 ? 'completed' : 'in_progress'
+      await updateAuditPlan(agendaId, { progress, custom_percentage: progress, status, completed: progress >= 100 })
+      setEditingNonAuditId(null)
+      setNonAuditProgressMsg('Progress berhasil diperbarui')
+      setTimeout(() => setNonAuditProgressMsg(''), 3000)
+      await refreshAgendaData(selectedYear)
+    } catch {
+      setNonAuditProgressMsg('Gagal memperbarui progress')
+      setTimeout(() => setNonAuditProgressMsg(''), 3000)
+    }
+  }
+
+  async function refreshAgendaData(year = selectedYear) {
+    const [workListResponse, auditPlanResponse] = await Promise.all([
+      getWorkList(year),
+      getAuditPlans(year),
+    ])
+
+    const nextState = buildAgendaState(workListResponse, auditPlanResponse)
+    setWorkListData(nextState.workList)
+    setAgendas(nextState.agendas)
+    localStorage.setItem('portalAoptiWorkList', JSON.stringify(nextState.workList))
+    window.dispatchEvent(new Event('portalWorkList-changed'))
+    window.dispatchEvent(new Event('portalAuditPlans-changed'))
+
+    return nextState
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -229,55 +340,10 @@ function AuditPlanPage() {
 
         if (cancelled) return
 
-        const workList = (workListResponse.worklist || []).map(normalizeWorkItem)
-        setWorkListData(workList)
-
-        const workListAgendas = workList.map((item) => ({
-          id: `wl-${item.id}`,
-          taskId: item.id,
-          programName: item.programName,
-          taskName: item.taskName,
-          startDate: item.startDate || item.date,
-          endDate: item.endDate || item.startDate || item.date,
-          location: item.location,
-          progress: item.progress,
-          status: item.status,
-          completed: item.status === 'completed',
-          isAgenda: false,
-          tahapType: 'audit',
-          phaseLabel: 'Program Kerja',
-          time: item.time || '',
-          phases: [
-            { phase: 'Entry', date: item.startDate || item.date, done: item.progress >= 0 },
-            { phase: 'Konfirmasi', date: '', done: item.progress >= 25 },
-            { phase: 'Expose', date: '', done: item.progress >= 50 },
-            { phase: 'Exit', date: '', done: item.progress >= 75 },
-          ],
-        }))
-
-        const auditPlanAgendas = (auditPlanResponse || []).map((plan) => ({
-          id: plan.id,
-          taskId: plan.task_id,
-          programName: plan.program_name,
-          taskName: plan.task_name,
-          startDate: plan.start_date,
-          endDate: plan.end_date || plan.start_date,
-          location: plan.location,
-          progress: Number(plan.progress) || 0,
-          status: plan.status || 'scheduled',
-          completed: Boolean(plan.completed),
-          isAgenda: Boolean(plan.is_agenda),
-          tahapType: plan.tahap_type || 'audit',
-          phaseLabel: plan.phase_label || '',
-          customPercentage: Number(plan.custom_percentage) || 0,
-          note: plan.note || '',
-          time: plan.time || '',
-          team: typeof plan.team === 'string' ? JSON.parse(plan.team || '[]') : (plan.team || []),
-          phases: typeof plan.phases === 'string' ? JSON.parse(plan.phases || '[]') : (plan.phases || []),
-        }))
-
-        setAgendas([...workListAgendas, ...auditPlanAgendas])
-      } catch (error) {
+        const nextState = buildAgendaState(workListResponse, auditPlanResponse)
+        setWorkListData(nextState.workList)
+        setAgendas(nextState.agendas)
+      } catch (_error) {
         if (!cancelled) {
           setWorkListData([])
           setAgendas([])
@@ -287,8 +353,20 @@ function AuditPlanPage() {
 
     loadData()
 
+    const refresh = () => loadData()
+    const refreshTimer = window.setInterval(refresh, 15000)
+    window.addEventListener('portalWorkList-changed', refresh)
+    window.addEventListener('portalAuditPlans-changed', refresh)
+    window.addEventListener('portalPrograms-changed', refresh)
+    window.addEventListener('focus', refresh)
+
     return () => {
       cancelled = true
+      window.clearInterval(refreshTimer)
+      window.removeEventListener('portalWorkList-changed', refresh)
+      window.removeEventListener('portalAuditPlans-changed', refresh)
+      window.removeEventListener('portalPrograms-changed', refresh)
+      window.removeEventListener('focus', refresh)
     }
   }, [selectedYear])
 
@@ -305,7 +383,55 @@ function AuditPlanPage() {
     return date.getFullYear() === selectedYear && date.getMonth() === selectedMonth && a.isAgenda
   })
 
-  const agendasOnDate = filteredAgendas.filter((a) => a.startDate === selectedDate)
+  const groupedAgendasInMonth = (() => {
+    const groups = new Map()
+
+    agendasInMonth.forEach((agenda) => {
+      const key = `${agenda.programName || 'Program Kerja'}::${agenda.taskId || agenda.taskName || agenda.id}`
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          programName: agenda.programName || 'Program Kerja',
+          taskName: agenda.taskName || 'Tugas Audit',
+          agendas: [],
+        })
+      }
+      groups.get(key).agendas.push(agenda)
+    })
+
+    return Array.from(groups.values())
+      .map((group) => {
+        const sortedAgendas = [...group.agendas].sort((a, b) => {
+          const dateDiff = new Date(a.startDate) - new Date(b.startDate)
+          if (dateDiff !== 0) return dateDiff
+          return String(a.time || '').localeCompare(String(b.time || ''))
+        })
+
+        const doneCount = sortedAgendas.filter((agenda) => agenda.completed || Number(agenda.progress || 0) >= 100).length
+        const latestStage = sortedAgendas.reduce((current, agenda) => {
+          if (!current) return agenda
+          const currentProgress = Number(current.progress || 0)
+          const agendaProgress = Number(agenda.progress || 0)
+          if (agendaProgress > currentProgress) return agenda
+          if (agendaProgress === currentProgress && new Date(agenda.startDate) > new Date(current.startDate)) return agenda
+          return current
+        }, null)
+
+        return {
+          ...group,
+          agendas: sortedAgendas,
+          firstDate: sortedAgendas[0]?.startDate || '',
+          lastDate: sortedAgendas[sortedAgendas.length - 1]?.startDate || '',
+          latestStage: latestStage || sortedAgendas[sortedAgendas.length - 1],
+          doneCount,
+        }
+      })
+      .sort((a, b) => new Date(a.firstDate) - new Date(b.firstDate))
+  })()
+
+  const agendasOnDate = filteredAgendas
+    .filter((a) => a.startDate === selectedDate)
+    .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')))
   const nowIso = isoDate(now.getFullYear(), now.getMonth(), now.getDate())
 
   const totalCount = filteredAgendas.length
@@ -327,6 +453,44 @@ function AuditPlanPage() {
       )
     })
     .sort((a, b) => new Date(a.startDate) - new Date(b.startDate))
+
+  const timelineSource = (() => {
+    const groups = new Map()
+    searchResults
+      .filter((agenda) => agenda.isAgenda)
+      .forEach((agenda) => {
+        const key = `${agenda.programName || 'Program Kerja'}::${agenda.taskId || agenda.taskName || agenda.id}`
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            programName: agenda.programName || 'Program Kerja',
+            taskName: agenda.taskName || 'Tugas Audit',
+            agendas: [],
+          })
+        }
+        groups.get(key).agendas.push(agenda)
+      })
+
+    return Array.from(groups.values()).map((group) => {
+      const sortedAgendas = [...group.agendas].sort((a, b) => new Date(a.startDate) - new Date(b.startDate))
+      const latestStage = sortedAgendas.reduce((current, agenda) => {
+        const currentProgress = Number(current?.progress || 0)
+        const agendaProgress = Number(agenda.progress || 0)
+        if (agendaProgress > currentProgress) return agenda
+        if (agendaProgress === currentProgress && new Date(agenda.startDate) > new Date(current.startDate)) return agenda
+        return current
+      }, sortedAgendas[0])
+
+      return {
+        ...group,
+        agendas: sortedAgendas,
+        latestStage,
+        firstDate: sortedAgendas[0]?.startDate || '',
+        lastDate: sortedAgendas[sortedAgendas.length - 1]?.startDate || '',
+      }
+    }).sort((a, b) => new Date(a.firstDate) - new Date(b.firstDate))
+  })()
+  const timelineItems = timelineSource.slice(0, 10)
 
   // Team handlers
   function addTeamMember() {
@@ -382,15 +546,22 @@ function AuditPlanPage() {
     // Create new agenda entry
     const phaseConfig = auditPhases.find((p) => p.id === selectedPhase)
     const progress = selectedTahapType === 'audit' ? (phaseConfig?.value || 0) : 0
+    const status = progress >= 100 ? 'completed' : progress > 0 ? 'in_progress' : 'scheduled'
+    const completed = progress >= 100
     const phaseLabel = selectedTahapType === 'audit' ? (phaseConfig?.label || '') : nonAuditDescription.trim()
     const phases = [
-      { phase: 'Entry', date: selectedPhase === 'entry_meeting' ? formDate : '', done: selectedPhase === 'entry_meeting' },
-      { phase: 'Konfirmasi', date: selectedPhase === 'konfirmasi' ? formDate : '', done: selectedPhase === 'konfirmasi' },
-      { phase: 'Expose', date: selectedPhase === 'expose' ? formDate : '', done: selectedPhase === 'expose' },
-      { phase: 'Exit', date: selectedPhase === 'exit_meeting' ? formDate : '', done: selectedPhase === 'exit_meeting' },
-    ]
+      { key: 'entry_meeting', phase: 'Entry', threshold: 25 },
+      { key: 'konfirmasi', phase: 'Konfirmasi', threshold: 50 },
+      { key: 'expose', phase: 'Expose', threshold: 75 },
+      { key: 'exit_meeting', phase: 'Exit', threshold: 100 },
+    ].map((item) => ({
+      phase: item.phase,
+      date: selectedTahapType === 'audit' && selectedPhase === item.key ? formDate : '',
+      done: selectedTahapType === 'audit' && progress >= item.threshold,
+    }))
 
     const newAgenda = {
+      // eslint-disable-next-line react-hooks/purity
       id: `ap-${Date.now()}`,
       taskId: selectedTask.id,
       programName: selectedTask.programName,
@@ -399,8 +570,8 @@ function AuditPlanPage() {
       endDate: formDate,
       location: selectedTask.location,
       progress,
-      status: 'in_progress',
-      completed: false,
+      status,
+      completed,
       isAgenda: true,
       tahapType: selectedTahapType,
       phaseLabel,
@@ -431,24 +602,8 @@ function AuditPlanPage() {
       team: newAgenda.team,
       phases: newAgenda.phases,
     })
-      .then((createdAgenda) => {
-        const storedAgenda = createdAgenda || newAgenda
-        setAgendas((prev) => {
-          const updated = prev.map((a) => {
-            if (a.id === `wl-${selectedTaskId}` && selectedTahapType === 'audit') {
-              return {
-                ...a,
-                phases: a.phases.map((phase) => (
-                  phase.phase === phaseLabel
-                    ? { ...phase, done: true, date: formDate }
-                    : phase
-                )),
-              }
-            }
-            return a
-          })
-          return [...updated, storedAgenda]
-        })
+      .then(async () => {
+        await refreshAgendaData(selectedYear)
 
         setFormMessage(selectedTahapType === 'audit' ? 'Tahap Audit berhasil diupdate!' : 'Tahap Non Audit berhasil ditambahkan!')
         setFormDate(isoDate(now.getFullYear(), now.getMonth(), now.getDate()))
@@ -479,49 +634,31 @@ function AuditPlanPage() {
     const agenda = agendas.find((a) => a.id === agendaId)
     if (!agenda) return
 
-    if (agenda.id.startsWith('wl-') || agenda.taskId) {
-      if (confirm(`Hapus "${agenda.taskName}" dari Program Kerja dan Kalender?`)) {
+    if (agenda.id.startsWith('wl-')) {
+      toast.confirm({
+        title: 'Hapus Agenda',
+        message: `Hapus "${agenda.taskName}" dari Program Kerja dan Kalender?`,
+        confirmLabel: 'Hapus',
+        tone: 'danger',
+      }).then((ok) => {
+        if (!ok) return
         const taskIdToDelete = agenda.taskId || agenda.id.replace('wl-', '')
-
         deleteWorkItem(taskIdToDelete)
-          .then(() => getWorkList(selectedYear))
-          .then((response) => {
-            const workList = (response.worklist || []).map(normalizeWorkItem)
-            setWorkListData(workList)
-            const workListAgendas = workList.map((item) => ({
-              id: `wl-${item.id}`,
-              taskId: item.id,
-              programName: item.programName,
-              taskName: item.taskName,
-              startDate: item.startDate || item.date,
-              endDate: item.endDate || item.startDate || item.date,
-              location: item.location,
-              progress: item.progress,
-              status: item.status,
-              completed: item.status === 'completed',
-              isAgenda: false,
-              tahapType: 'audit',
-              phaseLabel: 'Program Kerja',
-              time: item.time || '',
-              phases: [
-                { phase: 'Entry', date: item.startDate || item.date, done: item.progress >= 0 },
-                { phase: 'Konfirmasi', date: '', done: item.progress >= 25 },
-                { phase: 'Expose', date: '', done: item.progress >= 50 },
-                { phase: 'Exit', date: '', done: item.progress >= 75 },
-              ],
-            }))
-            setAgendas((prev) => [...workListAgendas, ...prev.filter((a) => !a.id.startsWith('wl-') && a.id !== agendaId)])
-            localStorage.setItem('portalAoptiWorkList', JSON.stringify(workList))
-            window.dispatchEvent(new Event('portalWorkList-changed'))
-          })
-          .catch(() => setFormMessage('Gagal menghapus agenda'))
-      }
+          .then(() => { refreshAgendaData(selectedYear); toast.success('Agenda dihapus') })
+          .catch(() => { setFormMessage('Gagal menghapus agenda'); toast.error('Gagal menghapus agenda') })
+      })
     } else {
-      if (confirm(`Hapus "${agenda.taskName}" dari daftar agenda?`)) {
+      toast.confirm({
+        title: 'Hapus Agenda',
+        message: `Hapus "${agenda.taskName}" dari daftar agenda?`,
+        confirmLabel: 'Hapus',
+        tone: 'danger',
+      }).then((ok) => {
+        if (!ok) return
         deleteAuditPlan(agendaId)
-          .then(() => setAgendas((prev) => prev.filter((a) => a.id !== agendaId)))
-          .catch(() => setFormMessage('Gagal menghapus agenda'))
-      }
+          .then(() => { refreshAgendaData(selectedYear); toast.success('Agenda dihapus') })
+          .catch(() => { setFormMessage('Gagal menghapus agenda'); toast.error('Gagal menghapus agenda') })
+      })
     }
   }
 
@@ -542,7 +679,7 @@ function AuditPlanPage() {
     : workListData
 
   return (
-    <section className="ap-layout">
+    <section className={`ap-layout ${isKSPI ? 'ap-layout-kspi' : ''}`}>
       {/* Main Content */}
       <div className="ap-main">
         {/* Header */}
@@ -550,16 +687,18 @@ function AuditPlanPage() {
           <div className="ap-title-section">
             <h2>Jadwal Audit</h2>
             <p>Pantau progress dan jadwal kegiatan audit internal</p>
-            {isKSPI && (
-              <span className="fieldwork-readonly-badge">
+          </div>
+          {isKSPI && (
+            <div className="ap-header-actions">
+              <span className="wl-readonly-badge ap-readonly-badge">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
                   <circle cx="12" cy="12" r="3" />
                 </svg>
                 Mode Baca Saja
               </span>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         {/* Stats Cards */}
@@ -644,6 +783,103 @@ function AuditPlanPage() {
           </div>
         </div>
 
+        <section className="ap-timeline-panel">
+          <div className="ap-timeline-main">
+            <div className="ap-timeline-head">
+              <div>
+                <h3>Timeline Audit</h3>
+                <p>Agenda terdekat berdasarkan filter dan pencarian aktif</p>
+              </div>
+              <span>{timelineItems.length}{timelineSource.length > 10 ? ` dari ${timelineSource.length}` : ''} grup</span>
+            </div>
+            {timelineItems.length === 0 ? (
+              <div className="empty-state-pro empty-state-pro--compact">
+                <div className="empty-state-pro__icon">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="4" width="18" height="18" rx="2" />
+                    <line x1="3" y1="10" x2="21" y2="10" />
+                  </svg>
+                </div>
+                <div>
+                  <strong>Belum ada agenda timeline</strong>
+                  <span>Tambahkan tahap audit untuk membangun timeline pelaksanaan.</span>
+                </div>
+              </div>
+            ) : (
+              <div className="ap-timeline-list">
+                {timelineItems.map((group) => {
+                  const latestStage = group.latestStage
+                  const status = getStatus(latestStage.startDate, latestStage.completed)
+                  const config = statusConfig[status]
+                  const open = expandedTimelineKey === group.key
+                  const dateLabel = group.firstDate === group.lastDate
+                    ? formatDateShort(group.firstDate)
+                    : `${formatDateShort(group.firstDate)} - ${formatDateShort(group.lastDate)}`
+                  return (
+                    <div key={group.key} className={`ap-timeline-group ${open ? 'is-open' : ''}`}>
+                      <button
+                        type="button"
+                        className="ap-timeline-item"
+                        onClick={() => {
+                          setSelectedDate(latestStage.startDate)
+                          setExpandedTimelineKey(open ? null : group.key)
+                        }}
+                        style={{ '--timeline-color': config.color }}
+                      >
+                        <span className="ap-timeline-date">{dateLabel}</span>
+                        <span className="ap-timeline-body">
+                          <strong>{group.programName} - {group.taskName}</strong>
+                          <small>Tahap terakhir: {latestStage.phaseLabel || `${latestStage.progress}%`}</small>
+                        </span>
+                        <span className="ap-timeline-status" style={{ background: config.bg, color: config.color }}>{group.agendas.length} tahap</span>
+                      </button>
+                      {open && (
+                        <div className="ap-timeline-stages">
+                          {group.agendas.map((stage) => {
+                            const stageStatus = getStatus(stage.startDate, stage.completed)
+                            const stageConfig = statusConfig[stageStatus]
+                            return (
+                              <button
+                                key={stage.id}
+                                type="button"
+                                className="ap-timeline-stage"
+                                onClick={() => setSelectedDate(stage.startDate)}
+                              >
+                                <span className="ap-timeline-stage-dot" style={{ background: stageConfig.color }} />
+                                <span>
+                                  <strong>{stage.phaseLabel || 'Tahap Audit'}</strong>
+                                  <small>{formatDateShort(stage.startDate)}{stage.time ? ` - ${stage.time}` : ''}</small>
+                                </span>
+                                <em>{stage.progress}%</em>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+          <aside className="ap-selected-date-panel">
+            <div className="ap-selected-date-head">
+              <span>{formatDateShort(selectedDate)}</span>
+              <strong>{agendasOnDate.length}</strong>
+            </div>
+            {agendasOnDate.length === 0 ? (
+              <p>Tidak ada agenda pada tanggal ini.</p>
+            ) : agendasOnDate.slice(0, 4).map((agenda) => (
+              <div key={agenda.id} className="ap-selected-date-item">
+                <strong>{agenda.taskName}</strong>
+                <span>{agenda.phaseLabel || agenda.programName}</span>
+                {agenda.time && <small>{agenda.time}</small>}
+              </div>
+            ))}
+          </aside>
+        </section>
+
+        <div className={`ap-calendar-agenda-zone ${isKSPI ? 'ap-kspi-calendar-agenda-zone' : ''}`}>
         {/* Calendar */}
         <div className="ap-calendar-card">
           <div className="ap-calendar-nav">
@@ -697,13 +933,26 @@ function AuditPlanPage() {
                       {dayAgendas.slice(0, 3).map((agenda) => {
                         const status = getStatus(agenda.startDate, agenda.completed)
                         const color = statusConfig[status].color
-                        const donePhase = agenda.phases.find((p) => p.done)
-                        const displayName = `${agenda.programName} - ${agenda.taskName}`
-                        const phaseText = donePhase ? donePhase.phase : (agenda.phaseLabel || 'Program Kerja')
+                        // Tahap Audit hanya tampil untuk agenda bertipe audit
+                        const phaseText = agenda.isAgenda && agenda.tahapType === 'audit'
+                          ? (agenda.phaseLabel || 'Tahap Audit')
+                          : agenda.isAgenda && agenda.tahapType === 'non_audit'
+                            ? (agenda.phaseLabel || 'Non Audit')
+                            : null
                         return (
                           <div key={agenda.id} className="ap-day-task-pill" style={{ borderLeftColor: color }}>
-                            <span className="ap-day-task-name">{displayName}</span>
-                            <span className="ap-day-task-meta">{phaseText}{agenda.time ? ` • ${agenda.time}` : ''} • {agenda.progress}%</span>
+                            <div className="ap-pill-program">{agenda.programName}</div>
+                            <div className="ap-pill-task">{agenda.taskName}</div>
+                            {phaseText && <div className="ap-pill-phase">{phaseText}</div>}
+                            {agenda.time && (
+                              <div className="ap-pill-time">
+                                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                                </svg>
+                                {agenda.time}
+                              </div>
+                            )}
+                            <div className="ap-pill-progress">{agenda.progress}%</div>
                           </div>
                         )
                       })}
@@ -724,97 +973,181 @@ function AuditPlanPage() {
             <h3>Daftar Agenda {monthNames[selectedMonth]} {selectedYear}</h3>
             <span>{agendasInMonth.length} agenda</span>
           </div>
+          {nonAuditProgressMsg && (
+            <div className="ap-non-audit-feedback">{nonAuditProgressMsg}</div>
+          )}
           <div className="ap-agenda-list">
-            {agendasInMonth.map((agenda) => {
-              const status = getStatus(agenda.startDate, agenda.completed)
-              const config = statusConfig[status]
-              const days = getDaysUntil(agenda.startDate)
-              const donePhase = agenda.phases.find((p) => p.done)
-              const phaseLabel = donePhase ? donePhase.phase : 'Start'
-              const hasTeam = agenda.team && agenda.team.length > 0 && agenda.team.some(m => m.name)
+            {groupedAgendasInMonth.map((group) => {
+              const groupStatus = getStatus(group.latestStage?.startDate, group.latestStage?.completed)
+              const groupConfig = statusConfig[groupStatus]
+              const isOpen = expandedAgendaGroupKey === group.key
 
               return (
-                <div key={agenda.id} className="ap-agenda-item" style={{ borderLeftColor: config.color }}>
-                  <div className="ap-agenda-date">
-                    <span className="ap-agenda-day">{new Date(agenda.startDate).getDate()}</span>
-                    <span className="ap-agenda-month">{monthNames[new Date(agenda.startDate).getMonth()]}</span>
-                  </div>
-                  <div className="ap-agenda-content">
-                    <div className="ap-agenda-status-row">
-                      <span className="ap-status-badge" style={{ background: config.bg, color: config.color }}>
-                        {config.label}
-                        {status !== 'completed' && status !== 'today' && <span> ({days} hari)</span>}
-                      </span>
-                      {agenda.isAgenda && (
-                        <span className="ap-agenda-type-badge">
-                          {agenda.id.startsWith('wl-') ? 'Dari Program' : 'Manual'}
-                        </span>
-                      )}
+                <div
+                  key={group.key}
+                  className={`ap-agenda-group ${isOpen ? 'is-open' : ''}`}
+                  style={{ '--agenda-group-accent': groupConfig.color, '--agenda-group-bg': groupConfig.bg }}
+                >
+                  <button
+                    type="button"
+                    className="ap-agenda-group-head"
+                    onClick={() => setExpandedAgendaGroupKey((prev) => (prev === group.key ? null : group.key))}
+                  >
+                    <span className="ap-agenda-group-title">
+                      <strong>{group.programName} - {group.taskName}</strong>
+                      <small>
+                        {formatDateShort(group.firstDate)} - {formatDateShort(group.lastDate)} • {group.agendas.length} tahap
+                      </small>
+                    </span>
+                    <span className="ap-agenda-group-info">
+                      <span className="ap-agenda-group-stage">{group.latestStage?.phaseLabel || `${group.latestStage?.progress || 0}%`}</span>
+                      <span className="ap-agenda-group-count">{group.doneCount}/{group.agendas.length}</span>
+                      <span className="ap-agenda-group-toggle">{isOpen ? '-' : '+'}</span>
+                    </span>
+                  </button>
+
+                  {isOpen && (
+                    <div className="ap-agenda-group-items">
+                      {group.agendas.map((agenda) => {
+                        const status = getStatus(agenda.startDate, agenda.completed)
+                        const config = statusConfig[status]
+                        const days = getDaysUntil(agenda.startDate)
+                        const donePhase = agenda.phases.find((p) => p.done)
+                        const phaseLabel = donePhase ? donePhase.phase : 'Start'
+                        const hasTeam = agenda.team && agenda.team.length > 0 && agenda.team.some((member) => member.name)
+
+                        return (
+                          <div key={agenda.id} className="ap-agenda-item" style={{ borderLeftColor: config.color }}>
+                            <div className="ap-agenda-date">
+                              <span className="ap-agenda-day">{new Date(agenda.startDate).getDate()}</span>
+                              <span className="ap-agenda-month">{monthNames[new Date(agenda.startDate).getMonth()]}</span>
+                            </div>
+                            <div className="ap-agenda-content">
+                              <div className="ap-agenda-status-row">
+                                <span className="ap-status-badge" style={{ background: config.bg, color: config.color }}>
+                                  {config.label}
+                                  {status !== 'completed' && status !== 'today' && <span> ({days} hari)</span>}
+                                </span>
+                                {agenda.isAgenda && (
+                                  <span className="ap-agenda-type-badge">
+                                    {agenda.id.startsWith('wl-') ? 'Dari Program' : 'Manual'}
+                                  </span>
+                                )}
+                              </div>
+                              <h4>{agenda.programName} - {agenda.taskName}</h4>
+                              <div className="ap-agenda-meta">
+                                <span className="ap-program-tag">{agenda.programName}</span>
+                                <span className="ap-program-tag">{agenda.phaseLabel || phaseLabel}</span>
+                                {agenda.time && (
+                                  <span className="ap-location-tag">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <circle cx="12" cy="12" r="10" />
+                                      <polyline points="12 6 12 12 16 14" />
+                                    </svg>
+                                    {agenda.time}
+                                  </span>
+                                )}
+                                {agenda.location && (
+                                  <span className="ap-location-tag">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                                      <circle cx="12" cy="10" r="3" />
+                                    </svg>
+                                    {agenda.location}
+                                  </span>
+                                )}
+                              </div>
+                              {hasTeam && (
+                                <div className="ap-agenda-team">
+                                  <span className="ap-team-label">Tim:</span>
+                                  {agenda.team.map((member, idx) => (
+                                    member.name && (
+                                      <span key={idx} className="ap-team-member">
+                                        {member.name}
+                                        <span className="ap-team-role">
+                                          ({teamRoles.find((roleItem) => roleItem.id === member.role)?.label || member.role})
+                                        </span>
+                                      </span>
+                                    )
+                                  ))}
+                                </div>
+                              )}
+                              {agenda.note && (
+                                <div className="ap-agenda-note">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                                  </svg>
+                                  {agenda.note}
+                                </div>
+                              )}
+                            </div>
+                            <div className="ap-agenda-actions">
+                              {!isKSPI && agenda.isAgenda && agenda.tahapType === 'non_audit' && (
+                                editingNonAuditId === agenda.id ? (
+                                  <div className="ap-non-audit-progress-picker">
+                                    <span className="ap-non-audit-progress-label">Pilih persentase Non Audit:</span>
+                                    <div className="ap-non-audit-progress-btns">
+                                      {nonAuditProgressOptions.map((opt) => (
+                                        <button
+                                          key={opt.value}
+                                          type="button"
+                                          className="ap-non-audit-progress-opt"
+                                          style={{ background: opt.bg, color: opt.color, borderColor: agenda.progress === opt.value ? opt.color : 'transparent' }}
+                                          onClick={() => handleNonAuditProgressUpdate(agenda.id, opt.value)}
+                                        >
+                                          {opt.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="ap-non-audit-cancel-btn"
+                                      onClick={() => setEditingNonAuditId(null)}
+                                      title="Batal"
+                                    >
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="ap-non-audit-edit-btn"
+                                    onClick={() => setEditingNonAuditId(agenda.id)}
+                                    title="Edit progress Non Audit"
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+                                    </svg>
+                                    <span className="ap-non-audit-edit-text">Ubah Progress Non Audit</span>
+                                    <span className="ap-non-audit-edit-value">{agenda.progress}%</span>
+                                  </button>
+                                )
+                              )}
+                              {!isKSPI && (
+                                <button
+                                  className="ap-agenda-delete-btn"
+                                  onClick={() => handleDeleteAgenda(agenda.id)}
+                                  title="Hapus agenda"
+                                >
+                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <polyline points="3 6 5 6 21 6" />
+                                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
-                    <h4>{agenda.programName} - {agenda.taskName}</h4>
-                    <div className="ap-agenda-meta">
-                      <span className="ap-program-tag">{agenda.programName}</span>
-                      <span className="ap-program-tag">{agenda.phaseLabel || phaseLabel}</span>
-                      {agenda.time && (
-                        <span className="ap-location-tag">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <circle cx="12" cy="12" r="10" />
-                            <polyline points="12 6 12 12 16 14" />
-                          </svg>
-                          {agenda.time}
-                        </span>
-                      )}
-                      {agenda.location && (
-                        <span className="ap-location-tag">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-                            <circle cx="12" cy="10" r="3" />
-                          </svg>
-                          {agenda.location}
-                        </span>
-                      )}
-                    </div>
-                    {hasTeam && (
-                      <div className="ap-agenda-team">
-                        <span className="ap-team-label">Tim:</span>
-                        {agenda.team.map((member, idx) => (
-                          member.name && (
-                            <span key={idx} className="ap-team-member">
-                              {member.name}
-                              <span className="ap-team-role">
-                                ({teamRoles.find(r => r.id === member.role)?.label || member.role})
-                              </span>
-                            </span>
-                          )
-                        ))}
-                      </div>
-                    )}
-                    {agenda.note && (
-                      <div className="ap-agenda-note">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                        </svg>
-                        {agenda.note}
-                      </div>
-                    )}
-                  </div>
-                  <div className="ap-agenda-actions">
-                    <button
-                      className="ap-agenda-delete-btn"
-                      onClick={() => handleDeleteAgenda(agenda.id)}
-                      title="Hapus agenda"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <polyline points="3 6 5 6 21 6" />
-                        <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-                      </svg>
-                    </button>
-                  </div>
+                  )}
                 </div>
               )
             })}
-            {agendasInMonth.length === 0 && (
+            {groupedAgendasInMonth.length === 0 && (
               <div className="ap-empty-state">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <rect x="3" y="4" width="18" height="18" rx="2" />
@@ -824,6 +1157,7 @@ function AuditPlanPage() {
               </div>
             )}
           </div>
+        </div>
         </div>
       </div>
 
@@ -1006,7 +1340,6 @@ function AuditPlanPage() {
                     >
                       <span className="ap-phase-icon">{phaseIcons[phase.icon]}</span>
                       <span className="ap-phase-label">{phase.label}</span>
-                      <span className="ap-phase-percent">{phase.value}%</span>
                     </button>
                   ))}
                 </div>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { useUser } from './UserContext'
 import { getChatMessages, sendChatMessage } from '../services/spiHubApi'
 
@@ -11,6 +11,7 @@ function buildPrivateChatId(userId1, userId2) {
 function mapMessage(message, currentUserId) {
   return {
     id: `msg-${message.id}`,
+    serverId: Number(message.id),
     senderId: message.sender,
     senderName: message.sender_name,
     content: message.message,
@@ -20,15 +21,17 @@ function mapMessage(message, currentUserId) {
 }
 
 function createAutoGroup(users) {
+  // Hanya auditor dan KSPI yang masuk grup otomatis (bukan admin)
+  const members = users.filter((u) => u.role === 'auditor' || u.role === 'kspi')
   return {
     id: 'team-group',
     name: 'Grup AOPTI',
     type: 'group',
-    description: 'Grup otomatis berisi seluruh user database',
+    description: 'Grup otomatis berisi seluruh Auditor AOPTI dan KSPI',
     isDefault: true,
-    participants: users.map((user) => user.id),
-    participantNames: users.reduce((names, user) => {
-      names[user.id] = user.name
+    participants: members.map((u) => u.id),
+    participantNames: members.reduce((names, u) => {
+      names[u.id] = u.name
       return names
     }, {}),
     messages: [],
@@ -40,6 +43,43 @@ function ChatProvider({ children }) {
   const { user, users } = useUser()
   const [chats, setChats] = useState({})
   const [isLoading, setIsLoading] = useState(true)
+  const chatsRef = useRef(chats)
+
+  useEffect(() => {
+    chatsRef.current = chats
+  }, [chats])
+
+  const getLastServerId = useCallback((messages = []) => {
+    if (messages.length === 0) return 0
+    const last = messages[messages.length - 1]
+    return Number(last?.serverId || 0)
+  }, [])
+
+  const appendMessages = useCallback((state, chatId, incoming, currentUserId) => {
+    if (!incoming || incoming.length === 0) return state
+    const chat = state[chatId]
+    if (!chat) return state
+
+    const existingIds = new Set(chat.messages.map((msg) => msg.serverId))
+    const mapped = incoming
+      .map((message) => mapMessage(message, currentUserId))
+      .filter((message) => !existingIds.has(message.serverId))
+
+    if (mapped.length === 0) return state
+
+    const merged = [...chat.messages, ...mapped]
+    const lastMessage = merged[merged.length - 1]
+
+    return {
+      ...state,
+      [chatId]: {
+        ...chat,
+        messages: merged,
+        lastActivity: lastMessage.timestamp,
+        lastMessage: lastMessage.content,
+      },
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -121,7 +161,7 @@ function ChatProvider({ children }) {
         })
 
         setChats(nextChats)
-      } catch (error) {
+      } catch (_error) {
         if (!cancelled) {
           setChats(baseChats)
         }
@@ -138,6 +178,65 @@ function ChatProvider({ children }) {
       cancelled = true
     }
   }, [user?.id, user?.name, users])
+
+  useEffect(() => {
+    if (!user?.id || users.length === 0) return undefined
+
+    let cancelled = false
+    const interval = window.setInterval(async () => {
+      if (cancelled) return
+
+      const currentChats = chatsRef.current
+      const groupChat = currentChats['team-group']
+      const groupLastId = getLastServerId(groupChat?.messages)
+
+      const privateChats = Object.values(currentChats).filter((chat) => chat.type === 'private')
+
+      try {
+        const groupPromise = getChatMessages({ type: 'group', last_id: groupLastId, limit: 200 })
+        const privatePromises = privateChats.map(async (chat) => {
+          const otherId = chat.participants.find((participant) => participant !== user.id)
+          const lastId = getLastServerId(chat.messages)
+          const messages = await getChatMessages({
+            type: 'private',
+            user_id: otherId,
+            current_user_id: user.id,
+            last_id: lastId,
+            limit: 200,
+          })
+          return [chat.id, messages]
+        })
+
+        const [groupMessages, privateResults] = await Promise.all([
+          groupPromise,
+          Promise.all(privatePromises),
+        ])
+
+        setChats((prev) => {
+          let nextState = prev
+
+          if (groupMessages && groupMessages.length > 0) {
+            nextState = appendMessages(nextState, 'team-group', groupMessages, user.id)
+          }
+
+          privateResults.forEach(([chatId, messages]) => {
+            if (messages && messages.length > 0) {
+              nextState = appendMessages(nextState, chatId, messages, user.id)
+            }
+          })
+
+          return nextState
+        })
+      } catch (_error) {
+        // Ignore polling errors to keep UI responsive
+      }
+    }, 4000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [user?.id, users, getLastServerId, appendMessages])
 
   const sendMessage = useCallback(async (chatId, senderId, senderName, content) => {
     if (!content.trim()) return
@@ -332,5 +431,6 @@ function useChat() {
   return context
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export { ChatProvider, useChat }
 export default ChatContext
