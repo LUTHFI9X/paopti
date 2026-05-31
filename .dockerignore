@@ -1,0 +1,9 @@
+.git
+.github
+.vscode
+frontend
+node_modules
+**/node_modules
+.DS_Store
+*.log
+backend/.env
