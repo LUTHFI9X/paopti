@@ -10,3 +10,7 @@ frontend/.vite/
 
 # Local one-off assets
 1601434932301-peruri.jpg
+logo_sketch_clean_vector.svg
+
+# Local tool settings
+.claude/
