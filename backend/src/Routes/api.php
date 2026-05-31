@@ -6,12 +6,16 @@ use App\Controllers\AuthController;
 use App\Controllers\ChatController;
 use App\Controllers\DashboardController;
 use App\Controllers\HealthController;
-use App\Controllers\WorklistController;
 use App\Controllers\ProgramController;
+use App\Controllers\SetupController;
 use App\Controllers\UsersController;
+use App\Controllers\WorklistController;
 
 // Health check
 $router->get('/api/health', [HealthController::class, 'index']);
+
+// One-shot DB setup — protected by SETUP_KEY env variable
+$router->get('/api/setup', [SetupController::class, 'run']);
 
 // Auth routes
 $router->post('/api/auth/login', [AuthController::class, 'login']);
